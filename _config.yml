@@ -225,9 +225,9 @@ social_icons:
   enable: true
   # Icon Mappings.
   # KeyMapsToSocialItemKey: NameOfTheIconFromFontAwesome
-  GitHub: github
+  GitHub: https://github.com/pzh2386034
   Twitter: twitter
-  Weibo: weibo
+  Weibo: https://weibo.com/u/1729874890/home?wvr=5
 
 
 # Sidebar Avatar
