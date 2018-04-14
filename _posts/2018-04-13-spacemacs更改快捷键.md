@@ -7,8 +7,6 @@ tags:
  - spacemacs
 ---
 
-## Background
-
 用了大半年的spacemacs,确实感受到了什么叫操作系统级别的编译器,头疼不会Lisp语言,要想按自己的想法配置下，基本都是照葫芦画瓢；今天看了下markdown-mode,感觉有很多快捷还是挺常用的，但是原始设计的按键弧度太长，而却`leader-key`是`SPC`,意味着必须要退出`insert-mode`才能使用......
 
 ## 尝试自定义快捷键
