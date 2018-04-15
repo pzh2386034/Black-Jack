@@ -129,3 +129,32 @@ tags:
 ))
 ```
 
+### 遗留问题解决 ###
+
+* 在`:bin`区域中定义快捷键的好处是，可以在`describe-personal-keybindings`中查到自己定义的快捷键
+
+```emacs-lisp
+(defun pan/post-init-markdown-mode ()
+  (with-eval-after-load 'markdown-mode
+    (use-package markdown-mode
+      :init
+      (add-hook 'markdown-mode-hook
+                (lambda ()
+                  (local-unset-key (kbd "M-n"))
+                  ;; (define-key markdown-mode-map (kbd "M-n 1") 'markdown-insert-header)
+                )
+      )
+      :bind (
+             ("M-n h" . markdown-insert-header)
+      )
+    )
+  )
+)
+```
+
+### 参考链接 ###
+
+[emacs china](https://emacs-china.org/t/topic/5563/5)
+
+[stackoverflow](https://stackoverflow.com/questions/19324644/emacs-unbind-a-modes-keybinding)
+
