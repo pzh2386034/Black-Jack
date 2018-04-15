@@ -114,7 +114,7 @@ tags:
 
 ## 遗留问题 ###
 
-    * 如何去帮定包自定义延时加载的快捷键, 如下代码会报错
+* 如何去绑定package自定义延时加载的快捷键, 如下代码会报错
 
 ``` emacs-lisp
 (defun pan/init-markdown-mode ()
