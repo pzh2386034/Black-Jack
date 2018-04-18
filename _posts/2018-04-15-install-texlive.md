@@ -43,6 +43,11 @@ sudo ./install-tl
 
   * 安装成功
 ![install success]({{"/assets/images/tools/latex.png" | absolute_url}})
+  * 卸载
+  
+``` shell
+sudo umount /mnt
+```
 
   * 配置启动脚本(/etc/bash.bashrc)
 
