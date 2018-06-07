@@ -94,6 +94,34 @@ semantic优化
                  '(project unloaded system recursive))
   ```
   * 通过`semantic-idle-scheduler-idle-time`设置进入idle time的时间，默认1s
+  * 很多函数库将所有的宏定义存放在若干个文件中，可以使用`semantic-lex-c-preprocessor-symbol-file`来分析文件，并使用其中的宏定义，例如引入Qt4函数库
+
+  ``` emacs-lisp
+  (setq qt4-base-dir "/usr/include/qt4")
+(semantic-add-system-include qt4-base-dir 'c++-mode)
+(add-to-list 'auto-mode-alist (cons qt4-base-dir 'c++-mode))
+(add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qconfig.h"))
+(add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qconfig-dist.h"))
+(add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qglobal.h"))
+  ```
+  
+  获取标签信息
+    * `semantic-ia-show-doc`: 显示光标下函数或变量的基本信息; 变量显示声明的信息，函数则显示定义方式
+    * `semantic-ia-show-summary`: 和上几乎一致
+    * `semantic-ia-describe-class`: 查询类信息
+    
+  代码导航
+    * `semantic-ia-fast-jump`: 跳转到申明处
+    * `semantic-mrub-switch-tag`: return back, 仅在`semantic-mrub-bookmark-mode`minor mode模式下使用
+    * `semantic-complete-jump(-local)`: 跳转到本文件(本项目)
+    * `semantic-analyze-proto-impl-toggle`: 在函数申明和实现间跳转
+    * `semantic-decoration-include-visit`: 跳转到头文件
+    * `semantic-next(previous)-tag`: 字面翻译即可
+    * `senator-go-to-up-reference`: 跳到父标签，需要实测效果
+    * `semantic-symref`: 查找标签引用处
+    * `semantic-symref-symbol`: 查找手动输入的标签名
+    * `senator-kill-tag`, `senator-yank-tag`, `senator-copy-tag`
+    *   
 
 目前我的semantic使用还是非常基本的
 
@@ -110,7 +138,9 @@ semantic优化
 (require 'semantic/bovine/gcc)
 ```
 
-## EDE ##
+
+
+### EDE ###
 
 ede可以允许我们以工程的形式管理代码，并通过`ede-cpp-root-project`, 帮助semantic获取额外信息，更好的分析源文件
 
