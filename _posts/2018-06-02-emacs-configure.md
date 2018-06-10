@@ -66,20 +66,20 @@ semantic是emacs重要的动态代码解析工具，对于第一次打开一个�
 
 它包含几种常用的mode
 
-  * global-semanticdb-minor-mode: 支持semanticdb，必须
-  * global-semantic-mru-bookmark-mode: 支持动态生成标签，可以通过global-semantic-switch-tags来支持动态标签间的跳转
-  * global-cedet-m3-minor-mode: 激活cedet菜单，通过右键使用；没啥用
-  * global-semantic-highlight-func-mode：高亮当前标签第一行，例如函数名，类名；没啥用
-  * global-semantic-stickyfunc-mode：将当前标签名放在buffer顶部
-  * global-semantic-decoration-mode：使用semantic-decoration-styles中定义的风格，作为tags的分割；没啥用
-  * global-semantic-idle-local-symbol-highlight-mode：高亮光标所在tag；有更好用的
-  * global-semantic-idle-scheduler-mode：在空闲时间自动分析源文件；必须
-  * global-semantic-idle-completions-mode：触发自动补全；必须
-  * global-semantic-idle-summary-mode：显示tag的信息；必须
-  * global-semantic-show-unmatched-syntax-mode：显示哪些元素无法被当前解析器解释
-  * global-semantic-show-parse-states-mode：显示当前解析源文件进度
-  * global-semantic-highlight-edits-mode：高亮显示当前buffer哪些还没有没解析器增量处理过
-  
+| global-semanticdb-minor-mode                     | 支持semanticdb                                                            | 必须              |
+| global-semantic-mru-bookmark-mode                | 支持动态生成标签，可以通过global-semantic-switch-tag 来支持动态标签间跳转 | -                 |
+| global-cedet-m3-minor-mode                       | 激活cedet菜单，通过右键使用                                               | -                 |
+| global-semantic-highlight-func-mode              | 高亮当前标签第一行，例如函数名，类名                                      | -                 |
+| global-semantic-stickyfunc-mode                  | 将当前标签名放在buffer顶部                                                | -                 |
+| global-semantic-decoration-mode                  | 使用semantic-decoration-styles中定义的风格作为tags的分割                  | -                 |
+| global-semantic-idle-local-symbol-highlight-mode | 高亮光标所在tags                                                          | - |
+| global-semantic-idle-scheduler-mode              | 空闲时间自动分析源文件                                                    | 必须              |
+| global-semantic-idle-completions-mode            | 触发自动补全                                                              | 必须              |
+| global-semantic-idle-summary-mode                | 显示tags信息                                                              | 必须              |
+| global-semantic-show-unmatched-syntax-mode       | 显示哪些元素无法被当前解析器解析                                          | -                 |
+| global-semantic-show-parse-states-mode           | 显示当前解析源文件进度                                                    | -                 |
+| global-semantic-highlight-edits-mode             | 高亮显示当前buffer哪些还没有被解析起增量处理过                            | -                 |
+
   
 semantic优化
 
@@ -106,11 +106,13 @@ semantic优化
   ```
   
   获取标签信息
+  
     * `semantic-ia-show-doc`: 显示光标下函数或变量的基本信息; 变量显示声明的信息，函数则显示定义方式
     * `semantic-ia-show-summary`: 和上几乎一致
     * `semantic-ia-describe-class`: 查询类信息
     
   代码导航
+  
     * `semantic-ia-fast-jump`: 跳转到申明处
     * `semantic-mrub-switch-tag`: return back, 仅在`semantic-mrub-bookmark-mode`minor mode模式下使用
     * `semantic-complete-jump(-local)`: 跳转到本文件(本项目)
@@ -121,7 +123,6 @@ semantic优化
     * `semantic-symref`: 查找标签引用处
     * `semantic-symref-symbol`: 查找手动输入的标签名
     * `senator-kill-tag`, `senator-yank-tag`, `senator-copy-tag`
-    *   
 
 目前我的semantic使用还是非常基本的
 
