@@ -163,3 +163,63 @@ ede可以允许我们以工程的形式管理代码，并通过`ede-cpp-root-pro
   * :system-include-path   :绝对路径
   * :include-path    :指明局部头文件搜索路径， "\"代码代码库根目录
   * :spp-table     :定义键值对，预处理时会使用
+  
+  
+## python ##
+
+### anaconda mode ###
+
+`python layer`安装就不说了，主要记录下(anaconda mode)[https://github.com/proofit404/anaconda-mode]，代码提示就靠他了
+
+如果安装`anaconda-mode`代码提示有问题，注意以下几点
+
+  * `cli`和`emacs`识别到的系统默认python版本可能不一致，`emacs`貌似是`python3`优先的，具体原因还没找到
+  * 如果代码提示的时候发现一些系统自带的库可以提示，但是自己通过`pip`或者其他途径安装的包无法提示，可以参考下(emacs-china)[https://emacs-china.org/t/topic/6104/15]
+  * 使用`virtual environment`有好处，但是我还是不太会用
+  
+  ``` emacs-lisp
+  (add-hook 'python-mode-hook
+          (lambda ()
+            (set (make-local-variable 'company-backends) '(company-anaconda company-dabbrev))
+            (local-set-key (kbd "c-r") 'anaconda-mode-find-references)
+            (local-set-key (kbd "c-d")  'anaconda-mode-find-definitions)
+            (local-set-key (kbd "c-u") 'anaconda-mode-find-assignments)
+            (local-set-key (kbd "c-y") 'anaconda-mode-show-doc)
+            (local-set-key (kbd "s-i") 'python-start-or-switch-repl)
+            (local-set-key (kbd "s-n") 'python-shell-send-buffer)
+            (local-set-key (kbd "s-N") 'python-shell-send-buffer-switch)
+            (local-set-key (kbd "s-m") 'python-shell-send-defun)
+            (local-set-key (kbd "s-M") 'python-shell-send-defun-switch)
+            (local-set-key (kbd "s-r") 'python-shell-send-region)
+            (local-set-key (kbd "s-R") 'python-shell-send-region-switch)
+            (company-quickhelp-mode)
+            ))
+
+(add-hook 'python-mode-hook 'anaconda-mode)
+(add-hook 'python-mode-hook 'eldoc-mode)
+
+  ```
+![python]({{"/assets/images/tools/python-note.png" | absolute_url}})
+
+
+## go ##
+
+  * 通过`brew install go`安装go编译环境
+  * 安装[go layer](https://github.com/syl20bnr/spacemacs/tree/master/layers/%2Blang/go),官方有详细文档
+  
+  但是在安装一些go工具包(例如guru,gorename,goimports等)时，可能会遇到一点问题，即使我用了科学上网，依旧无法成功安装，但我我们可以把包下载了，自己手动安装，步骤如下
+  
+    * 确定你的`gopath`路径，例如我的是`/Users/pan/go`,将如下语句加入`~/.bashrc_profile`
+
+    ``` shell
+    export PATH=$PATH:/usr/local/opt/go/libexec/bin
+    export GOPATH=/Users/pan/go
+    ```
+    
+      * git clone https://github.com/golang/tools.git tools
+      * mkdir -p /Users/pan/go/golang.org/x/tools
+      * cp -r tools/* /Users/pan/go/golang.org/x/tools
+      * go install golang.org/x/tools/cmd/guru
+      * go install  golang.org/x/tools/cmd/gorename
+      * go install golang.org/x/tools/cmd/goimports
+
