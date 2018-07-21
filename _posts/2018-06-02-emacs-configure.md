@@ -214,6 +214,7 @@ ede可以允许我们以工程的形式管理代码，并通过`ede-cpp-root-pro
     ``` shell
     export PATH=$PATH:/usr/local/opt/go/libexec/bin
     export GOPATH=/Users/pan/go
+    PATH="$GOPATH/bin:$PATH"
     ```
     
       * git clone https://github.com/golang/tools.git tools
