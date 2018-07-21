@@ -209,18 +209,22 @@ ede可以允许我们以工程的形式管理代码，并通过`ede-cpp-root-pro
   
   但是在安装一些go工具包(例如guru,gorename,goimports等)时，可能会遇到一点问题，即使我用了科学上网，依旧无法成功安装，但我我们可以把包下载了，自己手动安装，步骤如下
   
-    * 确定你的`gopath`路径，例如我的是`/Users/pan/go`,将如下语句加入`~/.bashrc_profile`
+  * 确定你的`gopath`路径，例如我的是`/Users/pan/go`,将如下语句加入`~/.bashrc_profile`
 
     ``` shell
     export PATH=$PATH:/usr/local/opt/go/libexec/bin
     export GOPATH=/Users/pan/go
     PATH="$GOPATH/bin:$PATH"
     ```
-    
-      * git clone https://github.com/golang/tools.git tools
-      * mkdir -p /Users/pan/go/golang.org/x/tools
-      * cp -r tools/* /Users/pan/go/golang.org/x/tools
-      * go install golang.org/x/tools/cmd/guru
-      * go install  golang.org/x/tools/cmd/gorename
-      * go install golang.org/x/tools/cmd/goimports
+  * 再在bash中执行以下命令
+  
+  ``` shell
+  git clone https://github.com/golang/tools.git tools
+  mkdir -p /Users/pan/go/golang.org/x/tools
+  cp -r tools/* /Users/pan/go/golang.org/x/tools
+  go install golang.org/x/tools/cmd/guru
+  go install  golang.org/x/tools/cmd/gorename
+  go install golang.org/x/tools/cmd/goimports
+  ```
+
 
