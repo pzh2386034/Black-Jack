@@ -30,7 +30,7 @@ tags:
 
 ### ggtags ###
 
-当代码量比较大时，推荐使用ggtags进行静态代码补全即可，需要安装一个`gnu global`(brew install global)，再配置一下更方便的快捷键就行了
+* 当代码量比较大时，推荐使用ggtags进行静态代码补全即可，需要安装一个`gnu global`(brew install global)，再配置一下更方便的快捷键(我一般绑定`s-g *`)和一些个人设置
 
 ``` emacs-lisp
 (setq
@@ -57,113 +57,171 @@ tags:
   (define-key helm-gtags-mode-map (kbd "s-g a") 'helm-gtags-clear-stack)
   )
 ```
+* 全工程搜索关键字，需要安装`ag`(brew install ag)搜索引擎，再配置一下快捷键(我一般绑定`s-h *`)
 
-### semantic ###
+``` emacs-lisp
+(with-eval-after-load 'helm-gtags
+  (define-key c++-mode-map (kbd "s-h d") 'helm-ag)
+  (define-key c++-mode-map (kbd "s-h t") 'helm-ag-this-file)
+  (define-key c++-mode-map (kbd "s-h b") 'helm-ag-buffers)
+  (define-key c++-mode-map (kbd "s-h p") 'helm-ag-project-root)
+  (define-key c++-mode-map (kbd "s-h D") 'helm-do-ag)
+  (define-key c++-mode-map (kbd "s-h T") 'helm-do-ag-this-file)
+  (define-key c++-mode-map (kbd "s-h B") 'helm-do-ag-buffers)
+  (define-key c++-mode-map (kbd "s-h P") 'helm-do-ag-project-root)
+  (define-key c++-mode-map (kbd "s-h c") 'helm-ag-clear-stack)
+) 
+```
 
-semantic是emacs重要的动态代码解析工具，对于第一次打开一个工程的代码文件，他会自动扫描头文件库及buffer中的关键字，生成一个semanticdb数据库；动态自动补全的原材料就从中来；
+<!-- ### semantic ### -->
 
-它是(cedet)[http://cedet.sourceforge.net]主要组成部分，也可以安装官方的介绍直接安装`cedet`，省心
+<!-- semantic是emacs重要的动态代码解析工具，对于第一次打开一个工程的代码文件，他会自动扫描头文件库及buffer中的关键字，生成一个semanticdb数据库；动态自动补全的原材料就从中来； -->
 
-它包含几种常用的mode
+<!-- 它是(cedet)[http://cedet.sourceforge.net]主要组成部分，也可以安装官方的介绍直接安装`cedet`，省心 -->
 
-| global-semanticdb-minor-mode                     | 支持semanticdb                                                            | 必须              |
-| global-semantic-mru-bookmark-mode                | 支持动态生成标签，可以通过global-semantic-switch-tag 来支持动态标签间跳转 | -                 |
-| global-cedet-m3-minor-mode                       | 激活cedet菜单，通过右键使用                                               | -                 |
-| global-semantic-highlight-func-mode              | 高亮当前标签第一行，例如函数名，类名                                      | -                 |
-| global-semantic-stickyfunc-mode                  | 将当前标签名放在buffer顶部                                                | -                 |
-| global-semantic-decoration-mode                  | 使用semantic-decoration-styles中定义的风格作为tags的分割                  | -                 |
-| global-semantic-idle-local-symbol-highlight-mode | 高亮光标所在tags                                                          | - |
-| global-semantic-idle-scheduler-mode              | 空闲时间自动分析源文件                                                    | 必须              |
-| global-semantic-idle-completions-mode            | 触发自动补全                                                              | 必须              |
-| global-semantic-idle-summary-mode                | 显示tags信息                                                              | 必须              |
-| global-semantic-show-unmatched-syntax-mode       | 显示哪些元素无法被当前解析器解析                                          | -                 |
-| global-semantic-show-parse-states-mode           | 显示当前解析源文件进度                                                    | -                 |
-| global-semantic-highlight-edits-mode             | 高亮显示当前buffer哪些还没有被解析起增量处理过                            | -                 |
+<!-- 它包含几种常用的mode -->
+
+<!-- | global-semanticdb-minor-mode                     | 支持semanticdb                                                            | 必须              | -->
+<!-- | global-semantic-mru-bookmark-mode                | 支持动态生成标签，可以通过global-semantic-switch-tag 来支持动态标签间跳转 | -                 | -->
+<!-- | global-cedet-m3-minor-mode                       | 激活cedet菜单，通过右键使用                                               | -                 | -->
+<!-- | global-semantic-highlight-func-mode              | 高亮当前标签第一行，例如函数名，类名                                      | -                 | -->
+<!-- | global-semantic-stickyfunc-mode                  | 将当前标签名放在buffer顶部                                                | -                 | -->
+<!-- | global-semantic-decoration-mode                  | 使用semantic-decoration-styles中定义的风格作为tags的分割                  | -                 | -->
+<!-- | global-semantic-idle-local-symbol-highlight-mode | 高亮光标所在tags                                                          | - | -->
+<!-- | global-semantic-idle-scheduler-mode              | 空闲时间自动分析源文件                                                    | 必须              | -->
+<!-- | global-semantic-idle-completions-mode            | 触发自动补全                                                              | 必须              | -->
+<!-- | global-semantic-idle-summary-mode                | 显示tags信息                                                              | 必须              | -->
+<!-- | global-semantic-show-unmatched-syntax-mode       | 显示哪些元素无法被当前解析器解析                                          | -                 | -->
+<!-- | global-semantic-show-parse-states-mode           | 显示当前解析源文件进度                                                    | -                 | -->
+<!-- | global-semantic-highlight-edits-mode             | 高亮显示当前buffer哪些还没有被解析起增量处理过                            | -                 | -->
 
   
-semantic优化
+<!-- semantic优化 -->
 
-  * 如果使用gcc，则`(require 'semantic/bocine/gcc)`可以帮我们自动搜索系统头文件目录
-  * 使用ede工程，限制搜索范围
-  * `(semantic-add-system-include "~/exp/include/boost_1_37" 'c++-mode)`显示的限定tags搜索范围
-  * 对于关键目录，首先显示的产生tags db；例如使用`semanticdb-create-ebrowse-database`或者`semanticdb-create-cscope-database`
-  * 对于特定的模式，去除某些搜索目录
+<!--   * 如果使用gcc，则`(require 'semantic/bocine/gcc)`可以帮我们自动搜索系统头文件目录 -->
+<!--   * 使用ede工程，限制搜索范围 -->
+<!--   * `(semantic-add-system-include "~/exp/include/boost_1_37" 'c++-mode)`显示的限定tags搜索范围 -->
+<!--   * 对于关键目录，首先显示的产生tags db；例如使用`semanticdb-create-ebrowse-database`或者`semanticdb-create-cscope-database` -->
+<!--   * 对于特定的模式，去除某些搜索目录 -->
 
-  ``` emacs-lisp
-  (setq-mode-local c-mode semanticdb-find-default-throttle
-                 '(project unloaded system recursive))
-  ```
-  * 通过`semantic-idle-scheduler-idle-time`设置进入idle time的时间，默认1s
-  * 很多函数库将所有的宏定义存放在若干个文件中，可以使用`semantic-lex-c-preprocessor-symbol-file`来分析文件，并使用其中的宏定义，例如引入Qt4函数库
+<!--   ``` emacs-lisp -->
+<!--   (setq-mode-local c-mode semanticdb-find-default-throttle -->
+<!--                  '(project unloaded system recursive)) -->
+<!--   ``` -->
+<!--   * 通过`semantic-idle-scheduler-idle-time`设置进入idle time的时间，默认1s -->
+<!--   * 很多函数库将所有的宏定义存放在若干个文件中，可以使用`semantic-lex-c-preprocessor-symbol-file`来分析文件，并使用其中的宏定义，例如引入Qt4函数库 -->
 
-  ``` emacs-lisp
-  (setq qt4-base-dir "/usr/include/qt4")
-(semantic-add-system-include qt4-base-dir 'c++-mode)
-(add-to-list 'auto-mode-alist (cons qt4-base-dir 'c++-mode))
-(add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qconfig.h"))
-(add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qconfig-dist.h"))
-(add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qglobal.h"))
-  ```
+<!--   ``` emacs-lisp -->
+<!--   (setq qt4-base-dir "/usr/include/qt4") -->
+<!-- (semantic-add-system-include qt4-base-dir 'c++-mode) -->
+<!-- (add-to-list 'auto-mode-alist (cons qt4-base-dir 'c++-mode)) -->
+<!-- (add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qconfig.h")) -->
+<!-- (add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qconfig-dist.h")) -->
+<!-- (add-to-list 'semantic-lex-c-preprocessor-symbol-file (concat qt4-base-dir "/Qt/qglobal.h")) -->
+<!--   ``` -->
   
-  获取标签信息
+<!--   获取标签信息 -->
   
-    * `semantic-ia-show-doc`: 显示光标下函数或变量的基本信息; 变量显示声明的信息，函数则显示定义方式
-    * `semantic-ia-show-summary`: 和上几乎一致
-    * `semantic-ia-describe-class`: 查询类信息
+<!--     * `semantic-ia-show-doc`: 显示光标下函数或变量的基本信息; 变量显示声明的信息，函数则显示定义方式 -->
+<!--     * `semantic-ia-show-summary`: 和上几乎一致 -->
+<!--     * `semantic-ia-describe-class`: 查询类信息 -->
     
-  代码导航
+<!--   代码导航 -->
   
-    * `semantic-ia-fast-jump`: 跳转到申明处
-    * `semantic-mrub-switch-tag`: return back, 仅在`semantic-mrub-bookmark-mode`minor mode模式下使用
-    * `semantic-complete-jump(-local)`: 跳转到本文件(本项目)
-    * `semantic-analyze-proto-impl-toggle`: 在函数申明和实现间跳转
-    * `semantic-decoration-include-visit`: 跳转到头文件
-    * `semantic-next(previous)-tag`: 字面翻译即可
-    * `senator-go-to-up-reference`: 跳到父标签，需要实测效果
-    * `semantic-symref`: 查找标签引用处
-    * `semantic-symref-symbol`: 查找手动输入的标签名
-    * `senator-kill-tag`, `senator-yank-tag`, `senator-copy-tag`
+<!--     * `semantic-ia-fast-jump`: 跳转到申明处 -->
+<!--     * `semantic-mrub-switch-tag`: return back, 仅在`semantic-mrub-bookmark-mode`minor mode模式下使用 -->
+<!--     * `semantic-complete-jump(-local)`: 跳转到本文件(本项目) -->
+<!--     * `semantic-analyze-proto-impl-toggle`: 在函数申明和实现间跳转 -->
+<!--     * `semantic-decoration-include-visit`: 跳转到头文件 -->
+<!--     * `semantic-next(previous)-tag`: 字面翻译即可 -->
+<!--     * `senator-go-to-up-reference`: 跳到父标签，需要实测效果 -->
+<!--     * `semantic-symref`: 查找标签引用处 -->
+<!--     * `semantic-symref-symbol`: 查找手动输入的标签名 -->
+<!--     * `senator-kill-tag`, `senator-yank-tag`, `senator-copy-tag` -->
 
-目前我的semantic使用还是非常基本的
+<!-- 目前我的semantic使用还是非常基本的 -->
+
+<!-- ``` emacs-lisp -->
+<!-- (require 'cc-mode) -->
+<!-- (require 'semantic) -->
+<!-- (global-semanticdb-minor-mode 1) -->
+<!-- (global-semantic-idle-scheduler-mode 1) -->
+<!-- (global-semantic-highlight-func-mode 1) ;; active highlighting of first line for current tag -->
+<!-- (global-semantic-stickyfunc-mode 1) ;; activates mode when name of current tag will be shown in top line of buffer -->
+<!-- (global-semantic-idle-local-symbol-highlight-mode 1) ;; activates highlighting of local names that are the same as name of tag under cursor; -->
+<!-- (global-semantic-idle-scheduler-mode 1) ;; activates automatic parsing of source code in the idle time; -->
+<!-- (require 'semantic/ia) -->
+<!-- (require 'semantic/bovine/gcc) -->
+<!-- ``` -->
+
+
+### clang-format ###
+
+配置clang-format自动排版
+
+* 首先在自己的代码工程根目录创建`.clang-format`文件
+
+  
+* 配置clang-format快捷键
 
 ``` emacs-lisp
-(require 'cc-mode)
-(require 'semantic)
-(global-semanticdb-minor-mode 1)
-(global-semantic-idle-scheduler-mode 1)
-(global-semantic-highlight-func-mode 1) ;; active highlighting of first line for current tag
-(global-semantic-stickyfunc-mode 1) ;; activates mode when name of current tag will be shown in top line of buffer
-(global-semantic-idle-local-symbol-highlight-mode 1) ;; activates highlighting of local names that are the same as name of tag under cursor;
-(global-semantic-idle-scheduler-mode 1) ;; activates automatic parsing of source code in the idle time;
-(require 'semantic/ia)
-(require 'semantic/bovine/gcc)
+(defun clang-format-bindings-cpp ()
+  (define-key c++-mode-map (kbd "s-c f") 'clang-format-region)
+  (define-key c++-mode-map (kbd "s-c b") 'clang-format-buffer)
+  )
+(add-hook 'c++-mode-hook 'clang-format-bindings-cpp)
+```
+
+* 配置save保存时自动调用clang-format对代码进行排版再保存
+
+``` emacs-lisp
+;; 调用该函数在自动保存c-c++文件时，会检测.clang-format函数，有则自动排版，没有则不
+(defun pan/clang-format-buffer-smart ()
+  "Reformat buffer if .clang-format exists in the projectile root."
+  (interactive)
+  (when (f-exists? (expand-file-name ".clang-format" (projectile-project-root)))
+    (clang-format-buffer)))
+;; 保存时自动排版文件
+(defun my-c++-mode-before-save-hook ()
+  (when (or (eq major-mode 'c-mode) (eq major-mode 'c++-mode) )
+    (message "Begin to format buffer by .clang-format!")
+    (pan/clang-format-buffer-smart)))
+
+(add-hook 'before-save-hook #'my-c++-mode-before-save-hook)
+```
+
+### hideshow ###
+
+使用hideshow折叠代码
+
+``` emacs-lisp
+(with-eval-after-load 'hideshow
+  (define-key c-mode-map (kbd "s-c h") 'hs-toggle-hiding)
+  (define-key c-mode-map (kbd "s-c a") 'hs-hide-all)
+  (define-key c-mode-map (kbd "s-c l") 'hs-hide-level)
+  )
+```
+
+### c-c++ package###
+
+使用c-c++ package自带的clang-support补全代码，包括头文件函数，结构体成员变量自动提示，c++函数、成员变量等自动提示，基本和IDE提供的自动提示功能无异
+
+``` emacs-lisp
+     (c-c++ :variables
+            c-c++-default-mode-for-headers 'c++-mode
+            c-c++-enable-clang-support t)
+     (auto-completion :variables
+                      auto-completion-enable-snippets-in-popup t
+                      auto-completion-enable-help-tooltip t
+                      auto-completion-enable-sort-by-usage t
+                      )
 ```
 
 
 
-### EDE ###
-
-ede可以允许我们以工程的形式管理代码，并通过`ede-cpp-root-project`, 帮助semantic获取额外信息，更好的分析源文件
-
-``` emacs-lisp
-(ede-cpp-root-project "Test"
-                :name "Test Project"
-                :file "~/work/project/CMakeLists.txt"
-                :include-path '("/"
-                                "/Common"
-                                "/Interfaces"
-                                "/Libs"
-                               )
-                :system-include-path '("~/exp/include")
-                :spp-table '(("isUnix" . "")
-                             ("BOOST_TEST_DYN_LINK" . "")))
-```
-
-  * :file  :可以使用工程根目录的任何文件，仅仅提供根目录位置
-  * :system-include-path   :绝对路径
-  * :include-path    :指明局部头文件搜索路径， "\"代码代码库根目录
-  * :spp-table     :定义键值对，预处理时会使用
   
+
+ 
   
 ## python ##
 
