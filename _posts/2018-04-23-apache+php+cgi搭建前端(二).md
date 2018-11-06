@@ -181,3 +181,6 @@ echo hello_add(2, 4);
 
   * httpd无法启动，一般是httpd.conf中加载的模块有问题
   * httpd启动后，web无法访问自己虚拟的IP；请用`ifconfig`命令确定IP是否存在
+  * 如果在php.ini中加载了extension,但是实际测试没有加载，很可能是编译extension使用的phpsize, php-config工具和libphp5.so不一致；这种情况在httpd error_log文件中会有错误日志
+  * 使用phpsize和php-config工具，最好指定具体php版本的绝对路径，避免环境有多个php版本影响
+  * 如果phpinfo()能正常现实extension信息，但是使用extension中提供的PHP_FUNCION,却报404错误，一半是core-dump了，这时候观察下error\_log,每一次刷新都会多一条日志
