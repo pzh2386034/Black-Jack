@@ -102,6 +102,9 @@ PHP_FUNCTION(hello_add)
     long int result;
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ll", &a, &b) == FAILURE) {
         return;
+    }
+    result = cc_add(a, b);
+    RETURN_LONG(result);
 }
 
 /*在zend_function_entry字符串数组中增加元素*/
@@ -154,13 +157,25 @@ echo hello_add(2, 4);
 如果测试页面报错，要分以下情况
 
 
-  - 如果以下文字显示在测试页面中，则说明**自行编译的动态有问**，httpd扩展动态库`web_so.so`无法链接上`libhello.so`
+  - 如果以下文字显示在测试页面中，则说明**自行编译的动态有问**，httpd扩展动态库`web_so.so`无法链接上`libweb_so.so`
 
     >Congratulations! You have successfully modified ext/web_so/config.m4. Module panzehua is now compiled into PHP.
     
     该情况下，`phpinfo()`函数的应该能找到如下信息
     
    ![web so info]({{"/assets/images/tools/webso.png" | absolute_url}})
+   
+  -   如果实在链接有问题，建议可以使用动态加载动态库的方法解决，即在`PHP_MINIT_FUNCION`函数中使用`dlopen`动态加载函数库
+  
+  ``` c++
+  PHP_MINIT_FUNCTION(webInter)
+{
+    void *handle = NULL;
+    char *error;
+    handle = dlopen("/usr/local/lib/librpc_web.dylib", RTLD_LAZY);
+    return SUCCESS;
+}
+  ```
    
 
   - 如果没有显示，则说明`web_so.so`扩展库安装有问题，则在`phpinfo()`中应该查不到`web_so.so`信息，排查如下几点
@@ -175,7 +190,7 @@ echo hello_add(2, 4);
     * 如果apache错误提示找不到函数则要看/usr/local/lib目录下链接的动态库是否存在，以及是否是动态库
    ![ldd check hello so]({{"/assets/images/tools/ldd-helloso.png" | absolute_url}})
    
-   > 该问题应该是编译`libhello.so`有问题
+   > 该问题应该是编译`libweb_so.so`有问题
    
 ### 其余常见问题 ###
 
