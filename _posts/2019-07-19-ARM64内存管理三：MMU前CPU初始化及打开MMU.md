@@ -9,7 +9,7 @@ tags:
 
 2019-07-19-ARM64内存管理三：MMU前CPU初始化及打开MMU
 
-<上一篇中，详细分析了MMU打开前，为MMU打开后能正常启动linux kernel进行了3块区域的section map; 本篇聚焦为打开MMU而进行的CPU初始化, 主要内容：
+>上一篇中，详细分析了MMU打开前，为MMU打开后能正常启动linux kernel进行了3块区域的section map; 本篇聚焦为打开MMU而进行的CPU初始化, 主要内容：
 
 * cache和TLB处理
 
@@ -37,7 +37,7 @@ tags:
 
 <ARMv8采用了weakly-order内存模型,即处理器实际对内存访问（load and store）的执行序列和program order不一定保持严格的一致，处理器可以对内存访问进行reorder；例如，对于写操作，processor可能会合并两个写请求
 
-因此，有必要对内存进行分类，以便CPU可以对不同类型
+因此，有必要对内存进行分类，以便CPU可以对不同类型做一些性能优化
 
 * normal memory: 常用内存，访问无side effect，processor可以进行reorder, repeat或者merge以及分支预测
 
@@ -53,7 +53,7 @@ tags:
 
 ## 代码分析
 
-### __cpu_setup
+#### __cpu_setup
 
 ``` assembly
 /*
@@ -79,7 +79,7 @@ ENTRY(__cpu_setup)
 ENDPROC(__cpu_setup)
 ```
 
-### __enable_mmu
+#### __enable_mmu
 
 ``` assembly
 /*
@@ -108,7 +108,7 @@ ENDPROC(__enable_mmu)
 ```
 
 
-### __mmap_switched
+#### __mmap_switched
 
 ``` assembly
 /*
