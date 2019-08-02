@@ -7,6 +7,16 @@ tags:
 - mm
 ---
 
+2019-07-19-ARM64内存管理五：memblock初始化及分页机制化
+
+linux内存管理主要分3个阶段：
+
+* MMU未打开，还在汇编时代时；
+
+* fixmap, memblock时代，此时伙伴系统还未成形，一直到mm_init()函数中mem_ini()将空闲内存加载到zone中；
+
+* 伙伴系统建立
+
 
 >本篇主要介绍memblock建立过程及分页机制化，主要有如下几个步骤
 
@@ -36,6 +46,11 @@ tags:
 
 * 根据device node tree初始化CPU，psci
 	
+## 关键函数分析
+
+#### setup_arch
+	
+``` assembly
 void __init setup_arch(char **cmdline_p)
 {
 	setup_processor();
@@ -149,9 +164,11 @@ early_init_dt_scan_memory：扫描fdt中memory区域，寻找device_type="memory
 			boot_args[1], boot_args[2], boot_args[3]);
 	}
 }
+```
 
+#### arm64_memblock_init
 
-
+``` assembly
 void __init arm64_memblock_init(void)
 {
 	/*
@@ -188,6 +205,11 @@ void __init arm64_memblock_init(void)
 	/* 如果打开了memblock_debug开关，则会打印memblock结构体中目前保存的memory、reserve/* 
 	memblock_dump_all();
 }
+```
+
+#### early_init_fdt_scan_reserved_mem
+
+``` assembly
 
 /**
  * early_init_fdt_scan_reserved_mem() - create reserved memory regions
@@ -225,6 +247,8 @@ void __init early_init_fdt_scan_reserved_mem(void)
 	/* 将/reserved-memory/ fields 分配内存空间 */
 	fdt_init_reserved_mem();
 }
+```
+
 
 <在看paging_init()函数前，我们先看下目前的内存状态
 
@@ -238,10 +262,14 @@ void __init early_init_fdt_scan_reserved_mem(void)
 	
 	3. dtb中reserved-memory，但是有No-map属性，这种内存不属于OS管辖
 	
-* OS还未收集到的内存部分，暂未管辖
+* OS还未收集到的内存部分，暂未管辖(这部分稍后会被加载到伙伴系统中)
 
 在目前状态下，OS还无法正常使用它们，因为memblock中定义的都是物理地址；而目前仅有两段内存是已经mapping过(kernel image, fdt),其余段都还是黑暗状态，接下来就要给第一部分内存做mapping
 
+#### paging_init
+
+
+``` assembly
 /*
  * paging_init() sets up the page tables, initialises the zone memory
  * maps and sets up the zero page.
@@ -276,6 +304,13 @@ void __init paging_init(void)
 	flush_tlb_all();
 	cpu_set_default_tcr_t0sz();
 }
+```
+
+
+
+
+### buddy系统初始化
+
 
 #### 到目前为止，内核完成了如下工作
 
@@ -283,8 +318,6 @@ void __init paging_init(void)
 
 * paging_init完成了分页机制的初始化, 至此内核已经布局了一套完整的虚拟内存空间
 
-
-## buddy系统初始化
 
 #### 稀疏内存管理将整个物理地址空间划分为section
 
@@ -294,7 +327,9 @@ void __init paging_init(void)
 
 * 对于每个section又可以分为若干Pageblock，每个pageblock的状态由4bit来描述
 
+#### bootmem_init
 
+``` assembly
 /* 初始化内存数据结构(内存节点，内存域，页帧page)，不再依赖于特定体系结构 */
 void __init bootmem_init(void)
 {
@@ -323,7 +358,11 @@ void __init bootmem_init(void)
 	high_memory = __va((max << PAGE_SHIFT) - 1) + 1;
 	max_pfn = max_low_pfn = max;
 }
+```
 
+#### sparse_init
+
+``` assembly
 /*
  * Allocate the accumulated non-linear sections, allocate a mem_map
  * for each and record the physical to section mapping.
@@ -394,7 +433,7 @@ void __init sparse_init(void)
 
 	memblock_free_early(__pa(usemap_map), size);
 }
-
+```
 
 参考资料：
 
