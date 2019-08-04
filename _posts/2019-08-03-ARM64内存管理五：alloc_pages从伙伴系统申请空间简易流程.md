@@ -48,6 +48,9 @@ buddy system基本概念：
 	
 ### alloc_pages_nodemask: heart of buddy
 
+``` c++
+
+
 /*
  * 1. gfp_mask: 上层要求分配内存时使用的标志
  * 2. order： 要分配的阶数-1
@@ -158,11 +161,13 @@ out:
 	return page;
 }
 EXPORT_SYMBOL(__alloc_pages_nodemask);
+```
 
 
 
 ### get_page_from_freelist
 
+``` c++
 /*
  * get_page_from_freelist goes through the zonelist trying to allocate
  * a page.
@@ -364,11 +369,13 @@ this_zone_full:
 
 	return NULL;
 }
+```
 
 ## 附录
 
 ### zonelist type
 
+``` c++
 /* 这几个链表主要用于反内存碎片 */
 enum {
     MIGRATE_UNMOVABLE,         /* 页框内容不可移动,在内存中位置必须固定，无法移动到其他地方，核心内核分配的大部分页面都属于这一类。 */
@@ -386,16 +393,23 @@ enum {
 #endif
     MIGRATE_TYPES
 };
+```
 
 
 ### zone_modify
 
+``` c++
 #define __GFP_DMA   ((__force gfp_t)0x01u)   
 #define __GFP_HIGHMEM   ((__force gfp_t)0x02u)   
 #define __GFP_DMA32 ((__force gfp_t)0x04u)  
 #define __GFP_MOVABLE ((__force gfp_t)0x08u)
+```
+
+
 
 ### zone_action
+
+``` c++
 #define __GFP_WAIT  ((__force gfp_t)0x10u)  //表示分配内存的请求可以中断。也就是说，调度器在该请求期间可随意选择另一个过程执行，或者该请求可以被另一个更重要的事件中断。   
 #define __GFP_HIGH  ((__force gfp_t)0x20u)  //如果请求非常重要，则设置__GFP_HIGH，即内核急切的需要内存时。在分配内存失败可能给内核带来严重得后果时，一般会设置该标志   
 #define __GFP_IO    ((__force gfp_t)0x40u)  //在查找空闲内存期间内核可以进行I/O操作。这意味着如果内核在内存分配期间换出页，那么仅当设置该标志时，才能将选择的页写入磁盘。   
@@ -418,9 +432,11 @@ enum {
   
 /* This equals 0, but use constants in case they ever change */  
 #define GFP_NOWAIT  (GFP_ATOMIC & ~__GFP_HIGH)  
+```
 
 ### fallbacks 
 
+``` c++
 static int fallbacks[MIGRATE_TYPES][4] = {
     [MIGRATE_UNMOVABLE]   = { MIGRATE_RECLAIMABLE, MIGRATE_MOVABLE,     MIGRATE_RESERVE },
     [MIGRATE_RECLAIMABLE] = { MIGRATE_UNMOVABLE,   MIGRATE_MOVABLE,     MIGRATE_RESERVE },
@@ -435,9 +451,11 @@ static int fallbacks[MIGRATE_TYPES][4] = {
     [MIGRATE_ISOLATE]     = { MIGRATE_RESERVE }, /* Never used */
 #endif
 };
+```
 
 ### 关键结构体简介
 
+``` c++
 typedef struct pglist_data {
 	/* 本node管辖的zones：ZONE_HIGHMEM, ZONE_NORMAL, ZONE_DMA.*/
 	struct zone node_zones[MAX_NR_ZONES];
@@ -488,7 +506,9 @@ typedef struct pglist_data {
 	unsigned long numabalancing_migrate_nr_pages;
 #endif
 } pg_data_t;
+```
 
+``` c++
 struct zonelist {
 	/* 当前node, 每个zone的备份列表. 在当前节点的zone中无可用内存时，会向这些备用节点进行分配 */
 	struct zonelist_cache *zlcache_ptr;		     // NULL or &zlcache
@@ -509,6 +529,7 @@ struct zonelist_cache {
 	*/
 	unsigned long last_full_zap;		/* when last zap'd (jiffies) */
 }
+```
 
 参考资料：
 

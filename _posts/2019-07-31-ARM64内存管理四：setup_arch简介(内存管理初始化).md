@@ -50,7 +50,7 @@ linux内存管理主要分3个阶段：
 
 #### setup_arch
 	
-``` assembly
+``` c++
 void __init setup_arch(char **cmdline_p)
 {
 	setup_processor();
@@ -168,7 +168,7 @@ early_init_dt_scan_memory：扫描fdt中memory区域，寻找device_type="memory
 
 #### arm64_memblock_init
 
-``` assembly
+``` c++
 void __init arm64_memblock_init(void)
 {
 	/*
@@ -209,7 +209,7 @@ void __init arm64_memblock_init(void)
 
 #### early_init_fdt_scan_reserved_mem
 
-``` assembly
+``` c++
 
 /**
  * early_init_fdt_scan_reserved_mem() - create reserved memory regions
@@ -269,7 +269,7 @@ void __init early_init_fdt_scan_reserved_mem(void)
 #### paging_init
 
 
-``` assembly
+``` c++
 /*
  * paging_init() sets up the page tables, initialises the zone memory
  * maps and sets up the zero page.
@@ -329,7 +329,7 @@ void __init paging_init(void)
 
 #### bootmem_init
 
-``` assembly
+``` c++
 /* 初始化内存数据结构(内存节点，内存域，页帧page)，不再依赖于特定体系结构 */
 void __init bootmem_init(void)
 {
@@ -362,7 +362,7 @@ void __init bootmem_init(void)
 
 #### sparse_init
 
-``` assembly
+``` c++
 /*
  * Allocate the accumulated non-linear sections, allocate a mem_map
  * for each and record the physical to section mapping.
