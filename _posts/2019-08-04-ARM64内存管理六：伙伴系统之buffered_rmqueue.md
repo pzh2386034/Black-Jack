@@ -423,8 +423,124 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 
 	return -1;
 }
+```
+
+### steal_suitable_fallback
+
+``` c++
+static void steal_suitable_fallback(struct zone *zone, struct page *page,
+							  int start_type)
+{
+	int current_order = page_order(page);
+	int pages;
+
+	/* Take ownership for orders >= pageblock_order */
+	if (current_order >= pageblock_order) {
+	/* 
+	 * 计算出需要的pageblock的块数，然后将每一块都设置为需要的类型，
+	 * 这种情况下并没有把它们从旧类型的伙伴系统移到需要类型的伙伴系统中，在外面函数会将其移出来 
+	 */
+		change_pageblock_range(page, current_order, start_type);
+		return;
+	}
+
+	pages = move_freepages_block(zone, page, start_type);
+
+	/* Claim the whole block if over half of it is free */
+	if (pages >= (1 << (pageblock_order-1)) ||
+			page_group_by_mobility_disabled)
+		set_pageblock_migratetype(page, start_type);
+}
+```
+
+### move_freepages_block
+
+``` c++
+/* 这个page所在的pageblock必定属于fallback_type类型
+ * 将这个page所在的pageblock中所有空闲页框移动到start_type类型的free_list链表中，order不变，返回移动的页数量
+ * 但是不在buddy中的页会被跳过，并且这些已经被使用的页不会被更改为新的类型
+ * 具体做法:
+ * 从pageblock开始的第一页遍历到此pageblock的最后一页
+ * 然后根据page->_mapcount是否等于-1，如果等于-1，说明此页在伙伴系统中，不等于-1则下一页
+ * 对page->_mapcount == -1的页获取order值，order值保存在page->private中，然后将这一段连续空闲页框移动到start_type类型的free_list中
+ * 对这段连续空闲页框首页设置为start_type类型，这样就能表示此段连续空闲页框都是此类型了，通过page->index = start_type设置
+ * 继续遍历，直到整个pageblock遍历结束，这样整个pageblock中的空闲页框都被移动到start_type类型中了
+ */
+int move_freepages_block(struct zone *zone, struct page *page,
+				int migratetype)
+{
+	unsigned long start_pfn, end_pfn;
+	struct page *start_page, *end_page;
+    /* 根据page
+     * 将start_pfn设置为page所在pageblock的起始页框
+     * 将end_pfn设置为page所在pageblock的结束页框
+     * start_page指向start_pfn对应的页描述符
+     * end_page指向end_page对应的页描述符
+     */
+	start_pfn = page_to_pfn(page);
+	start_pfn = start_pfn & ~(pageblock_nr_pages-1);//使start_pfn为pageblock对齐
+	start_page = pfn_to_page(start_pfn);
+	end_page = start_page + pageblock_nr_pages - 1;
+	end_pfn = start_pfn + pageblock_nr_pages - 1;
+
+	/* Do not cross zone boundaries */
+	/* 检查开始页框是否属于zone中，如果不属于，则用page作为开始页框 
+     * 因为有可能pageblock中一半在上一个zone中，一半在本zone中
+     */
+	if (!zone_spans_pfn(zone, start_pfn))
+		start_page = page;
+	/* 同上如果结束页框不属于zone，不过这里直接返回0 */
+	if (!zone_spans_pfn(zone, end_pfn))
+		return 0;
+
+	return move_freepages(zone, start_page, end_page, migratetype);
+}
 
 ```
+
+### move_freepages
+
+``` c++
+/* 将此pageblock中的空闲页框全部移动到新的migratetype类型的伙伴系统链表中 */
+int move_freepages(struct zone *zone,
+			  struct page *start_page, struct page *end_page,
+			  int migratetype)
+{
+	struct page *page;
+	unsigned long order;
+	int pages_moved = 0;
+	/* 遍历这组页框中所有page */
+	for (page = start_page; page <= end_page;) {
+		/* Make sure we are not inadvertently changing nodes */
+		VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
+		/* 检查页框和页框号是否属于内存，如果不正确则跳过 */
+		if (!pfn_valid_within(page_to_pfn(page))) {
+			page++;
+			continue;
+		}
+		/* 如果page不在伙伴系统中则跳到下一页，通过判断page->_mapcount是否等于-128 */
+		if (!PageBuddy(page)) {
+			page++;
+			continue;
+		}
+		/* 获取此page的order号，保存在page->private中 */
+		order = page_order(page);
+		/* 从伙伴系统中拿出来，并放到新的migratetype类型中的order链表中 */
+		list_move(&page->lru,
+			  &zone->free_area[order].free_list[migratetype]);
+		/* 将这段空闲页框的首页设置为新的类型page->index = migratetype */
+		set_freepage_migratetype(page, migratetype);
+		/* 跳过此2^order个page数量 */
+		page += 1 << order;
+		/* 记录拿出来了多少个page */
+		pages_moved += 1 << order;
+	}
+	/* 返回一共拿出来的page */
+	return pages_moved;
+}
+```
+
+
 
 ## 附录
 
