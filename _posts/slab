@@ -1,0 +1,284 @@
+int
+__kmem_cache_create (struct kmem_cache *cachep, unsigned long flags)
+{
+	size_t left_over, freelist_size;
+	size_t ralign = BYTES_PER_WORD;
+	gfp_t gfp;
+	int err;
+	size_t size = cachep->size
+
+	/*
+	 * size 指针长度对齐
+	 */
+	if (size & (BYTES_PER_WORD - 1)) {
+		size += (BYTES_PER_WORD - 1);
+		size &= ~(BYTES_PER_WORD - 1);
+	}
+	/*
+	 * 如果标记了SLAB_RED_ZONE,则需要16byte对齐
+	 * SLAB_RED_ZONE用作SLAB debug; object之间有RED_ZONE, PADDING, 用来检测oob
+	 */
+	if (flags & SLAB_RED_ZONE) {
+		ralign = REDZONE_ALIGN;
+		/* If redzoning, ensure that the second redzone is suitably
+		 * aligned, by adjusting the object size accordingly. */
+		size += REDZONE_ALIGN - 1;
+		size &= ~(REDZONE_ALIGN - 1);
+	}
+
+	/* 3) caller mandated alignment */
+	if (ralign < cachep->align) {
+		ralign = cachep->align;
+	}
+	/* disable debug if necessary */
+	if (ralign > __alignof__(unsigned long long))
+		flags &= ~(SLAB_RED_ZONE | SLAB_STORE_USER);
+	/*
+	 * 4) Store it.
+	 */
+	cachep->align = ralign;
+	/* slab_state>=UP时，可以使用GFP_KERNEL分配，否则只能使用GFP_NOWAIT */
+	if (slab_is_available())
+	/* slab分配器是否已经可用 */
+		gfp = GFP_KERNEL;
+	else
+	/* slab初始化好之前，不允许阻塞 */
+		gfp = GFP_NOWAIT;
+		
+	/*
+	 * 确定slab管理对象的存储方式：内置还是外置 
+     * 通常，当对象大于等于512时，使用外置方式 
+     * 初始化阶段采用内置式。 slab_early_init 参见kmem_cache_init函数
+	 */
+	if ((size >= (PAGE_SIZE >> 5)) && !slab_early_init &&
+	    !(flags & SLAB_NOLEAKTRACE))
+		/*
+		 * Size is large, assume best to place the slab management obj
+		 * off-slab (should allow better packing of objs).
+		 */
+		flags |= CFLGS_OFF_SLAB;
+
+	size = ALIGN(size, cachep->align);
+	/*
+	 * We should restrict the number of objects in a slab to implement
+	 * byte sized index. Refer comment on SLAB_OBJ_MIN_SIZE definition.
+	 */
+	if (FREELIST_BYTE_INDEX && size < SLAB_OBJ_MIN_SIZE)
+		size = ALIGN(SLAB_OBJ_MIN_SIZE, cachep->align);
+	/* 计算slab的大小, 返回值是page order, 同时也计算此slab中可以容纳多少个同样大小的对象 */
+	left_over = calculate_slab_order(cachep, size, cachep->align, flags);
+	/* cachep->num为该cache中每个slab的对象数，为0，表示为该对象创建cache失败 */  
+	if (!cachep->num)
+		return -E2BIG;
+	/* 根据前面计算出来的cachep->num，计算有多少空闲内存
+	 * 包括：每个Object需要的内存+如果要debug需要的内存+对齐需要的内存
+	*/
+	freelist_size = calculate_freelist_size(cachep->num, cachep->align);
+
+	/*
+	 * 如果这是一个外置式slab，并且碎片大小大于slab管理对象的大小, 则可将slab管理空间移到slab中，改造成一个内置式slab
+	 * 即将碎片分配给管理slab所需的额外空间
+	*/
+	if (flags & CFLGS_OFF_SLAB && left_over >= freelist_size) {
+		/* 除去off-slab标志位 */
+		flags &= ~CFLGS_OFF_SLAB;
+		/* 更新碎片大小 */ 
+		left_over -= freelist_size;
+	}
+
+	if (flags & CFLGS_OFF_SLAB) {
+		/* align是针对slab对象的，如果slab管理对象是外置存储 
+        ，自然不会像内置那样影响到后面slab对象的存储位置 
+        ，也就不需要对齐了 */
+		freelist_size = calculate_freelist_size(cachep->num, 0);
+	}
+	
+	/* cache的着色块的单位大小为L1大小 */
+	cachep->colour_off = cache_line_size();
+	/* 着色块大小必须是对象要求对齐方式的倍数. */
+	if (cachep->colour_off < cachep->align)
+		cachep->colour_off = cachep->align;
+		/* 计算碎片区需要多少个着色快? */
+	cachep->colour = left_over / cachep->colour_off;
+	/* slab管理对象的大小 */
+	cachep->freelist_size = freelist_size;
+	cachep->flags = flags;
+	cachep->allocflags = __GFP_COMP;
+	if (CONFIG_ZONE_DMA_FLAG && (flags & SLAB_CACHE_DMA))
+	/* 允许从DMA区域申请内存 */
+		cachep->allocflags |= GFP_DMA;
+		/* slab对象的大小 */
+	cachep->size = size;
+	cachep->reciprocal_buffer_size = reciprocal_value(size);
+	/* 计算对象在slab中索引时用，参见obj_to_index函数 */
+	if (flags & CFLGS_OFF_SLAB) {
+	    /* 分配一个slab管理区域对象，保存在freelist_cache中
+         * 在slab创建的时候如果是外置式，那么需要从分配的这里面分配出slab对象，剩下的空间放kmem_bufctl_t[]数组， 
+         * 如果是内置式的slab，此指针为空 */ 
+		cachep->freelist_cache = kmalloc_slab(freelist_size, 0u);
+		BUG_ON(ZERO_OR_NULL_PTR(cachep->freelist_cache));
+	}
+
+	err = setup_cpu_cache(cachep, gfp);
+	if (err) {
+		__kmem_cache_shutdown(cachep);
+		return err;
+	}
+
+	return 0;
+}
+
+/* 
+ * 计算slab的需要多少物理页面，同时计算该slab能容纳多少对象：
+ * 
+ * 
+ */
+static size_t calculate_slab_order(struct kmem_cache *cachep,
+			size_t size, size_t align, unsigned long flags)
+{
+	unsigned long offslab_limit;
+	size_t left_over = 0;
+	int gfporder;
+
+	for (gfporder = 0; gfporder <= KMALLOC_MAX_ORDER; gfporder++) {
+		unsigned int num;
+		size_t remainder;
+		/* 
+		 * 计算slab中对象数:
+		 * 如果是外挂式的比较简单，objects = page_size<<gfporder / cachep->size;
+		 * 否则：page_size<<gfporder/ (cachep->size + sizeof(freelist_idx_t) + REDZONE_ALIGN(如果开启内存泄露检测))
+		 * 其中sizeof(freelist_idx_t) + REDZONE_ALIGN为管理空间
+		*/
+		cache_estimate(gfporder, size, align, flags, &remainder, &num);
+		/* 对象数为0，表示此order下，一个对象都放不下，检查下一order */
+		if (!num)
+			continue;
+
+		/* objects数量不能超过 SLAB_OBJ_MAX_NUM */
+		if (num > SLAB_OBJ_MAX_NUM)
+			break;
+
+		if (flags & CFLGS_OFF_SLAB) {
+			size_t freelist_size_per_obj = sizeof(freelist_idx_t);
+			/*
+			 * Max number of objs-per-slab for caches which
+			 * use off-slab slabs. Needed to avoid a possible
+			 * looping condition in cache_grow().
+			 * 这里对每个slab最大的objects数量进行了限定，具体原因还未理解，在了解完整个slab机制后再补充；
+			 */
+			if (IS_ENABLED(CONFIG_DEBUG_SLAB_LEAK))
+				freelist_size_per_obj += sizeof(char);
+			offslab_limit = size;
+			offslab_limit /= freelist_size_per_obj;
+
+ 			if (num > offslab_limit)
+				break;
+		}
+
+		/* Found something acceptable - save it away */
+		cachep->num = num;
+		/* slab的order，即由几个页面组成 */
+		cachep->gfporder = gfporder;
+		/* slab中剩余空间（碎片）的大小；实际slab大小(page_size<<gfporder) - nr_objects*size - mgmt_size */
+		left_over = remainder;
+
+		/* SLAB_RECLAIM_ACCOUNT表示此slab所占页面为可回收的 ，当内核检测是否有足够的页面满足用户态的需求时此类页面将被计算在内
+		 * 通过调用kmem_freepages()函数可以释放分配给slab的页框。由于是可回收的 ，所以不需要做后面的碎片检测了 */ 
+		if (flags & SLAB_RECLAIM_ACCOUNT)
+			break;
+
+		/* slab_break_gfp_order为slab所占页面的阀门，超过这个阀门时 ，无论碎片大小，都不再检测更高的order了 */
+		if (gfporder >= slab_max_order)
+			break;
+
+		/* slab所占页面的大小是碎片大小的8倍以上，页面利用率较高，可以接受这样的order */
+		if (left_over * 8 <= (PAGE_SIZE << gfporder))
+			break;
+	}
+	/* 返回碎片大小 */ 
+	return left_over;
+}
+struct kmem_cache {
+	/* 指向包含空闲对象的本地高速缓存，每个CPU有一个该结构，当有对象释放是，优先放入本地CPU高速缓存中 */
+	struct array_cache __percpu *cpu_cache;
+
+/* 1) Cache tunables. Protected by slab_mutex */
+/* 
+ * 要一次性移进本地高速缓存或从本地高速缓存一次性移出去对象的数量 
+ */
+	unsigned int batchcount;
+	/* 本地高速缓存中空闲对象的最大数目 */
+	unsigned int limit;
+	/* 是否存在CPU共享高速缓存，CPU共享高速缓存指针保存在kmem_cache_node结构中 */
+	unsigned int shared;
+	/* 对象长度 + 填充字节；相当于单个object内存大小 */
+	unsigned int size;
+	/* size的倒数，加快计算 */
+	struct reciprocal_value reciprocal_buffer_size;
+/* 2) touched by every alloc & free from the backend */
+	/* 高速缓存永久属性的标识，如果SLAB描述符放在外部(不放在SLAB中)，则CFLAGS_OFF_SLAB置1 */
+	unsigned int flags;		/* constant flags */
+	/* 每个SLAB中对象的个数(在同一个高速缓存中slab中对象个数相同) */
+	unsigned int num;		/* # of objs per slab */
+
+/* 3) cache_grow/shrink */
+	/* 一个单独SLAB中包含的连续页框数目的对数 */
+	unsigned int gfporder;
+
+	/* force GFP flags, e.g. GFP_DMA */
+	/* 分配页框时传递给伙伴系统的一组标识 */
+	gfp_t allocflags;
+	/* SLAB使用的颜色个数 */
+	size_t colour;			/* cache colouring range */
+	/* SLAB中基本对齐偏移，当新SLAB着色时，偏移量的值需要乘上这个基本对齐偏移量，理解就是1个偏移量等于多少个B大小的值 */
+	unsigned int colour_off;	/* colour offset */
+	/* 空闲对象链表放在外部时使用，其指向的SLAB高速缓存来存储空闲对象链表 */
+	struct kmem_cache *freelist_cache;
+	/* 空闲对象链表的大小 */
+	unsigned int freelist_size;
+
+	/* 构造函数，一般用于初始化这个SLAB高速缓存中的对象 */
+	void (*ctor)(void *obj);
+
+/* 4) cache creation/removal */
+	/* 存放高速缓存名字 */
+	const char *name;
+	/* 高速缓存描述符双向链表指针 */
+	struct list_head list;
+	/* 高速缓存被引用次数 */
+	int refcount;
+	/* 高速缓存中对象的大小 */
+	int object_size;
+	int align;
+
+/* 5) statistics */
+#ifdef CONFIG_DEBUG_SLAB
+	unsigned long num_active;
+	unsigned long num_allocations;
+	unsigned long high_mark;
+	unsigned long grown;
+	unsigned long reaped;
+	unsigned long errors;
+	unsigned long max_freeable;
+	unsigned long node_allocs;
+	unsigned long node_frees;
+	unsigned long node_overflow;
+	atomic_t allochit;
+	atomic_t allocmiss;
+	atomic_t freehit;
+	atomic_t freemiss;
+
+	/*
+	 * If debugging is enabled, then the allocator can add additional
+	 * fields and/or padding to every object. size contains the total
+	 * object size including these internal fields, the following two
+	 * variables contain the offset to the user object and its size.
+	 */
+	int obj_offset;
+#endif /* CONFIG_DEBUG_SLAB */
+#ifdef CONFIG_MEMCG_KMEM
+	struct memcg_cache_params memcg_params;
+#endif
+	/* 结点链表，此高速缓存可能在不同NUMA的结点都有SLAB链表 */
+	struct kmem_cache_node *node[MAX_NUMNODES];
+};
