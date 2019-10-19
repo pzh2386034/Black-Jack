@@ -42,476 +42,448 @@ buddy system基本概念：
 
 	
 >本篇中主要聚焦快速分配，慢速分配中不同的动作再以后进一步分析
-	
-	
-## 代码分析
-	
-### alloc_pages_nodemask: heart of buddy
 
+
+
+
+
+#### shrink_page_list
+
+``` c++
 /*
- * 1. gfp_mask: 上层要求分配内存时使用的标志
- * 2. order： 要分配的阶数-1
- * 3. zonelist： 合适的zone列表
- * 4. nodemask: node掩码
+ * shrink_page_list() returns the number of reclaimed pages
  */
-struct page *
-__alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
-			struct zonelist *zonelist, nodemask_t *nodemask)
+static unsigned long shrink_page_list(struct list_head *page_list,
+				      struct zone *zone,
+				      struct scan_control *sc,
+				      enum ttu_flags ttu_flags,
+				      unsigned long *ret_nr_dirty,
+				      unsigned long *ret_nr_unqueued_dirty,
+				      unsigned long *ret_nr_congested,
+				      unsigned long *ret_nr_writeback,
+				      unsigned long *ret_nr_immediate,
+				      bool force_reclaim)
 {
-	/* 用于指向第一个合适的zone */
-	struct zoneref *preferred_zoneref;
-	struct page *page = NULL;
-	unsigned int cpuset_mems_cookie;
-	/* 分配标识，默认WMARK_LOW来判断是否进入慢速分配 */
-	int alloc_flags = ALLOC_WMARK_LOW|ALLOC_CPUSET|ALLOC_FAIR;
-	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
-	struct alloc_context ac = {
-		.high_zoneidx = gfp_zone(gfp_mask),
-		.nodemask = nodemask,
-		 /* 从gfp_mask中获取选定的页框类型，当中只会检查__GFP_MOVABLE和__GFP_RECLAIMABLE */
-		.migratetype = gfpflags_to_migratetype(gfp_mask),
-	};
-
-	gfp_mask &= gfp_allowed_mask;
-
-	lockdep_trace_alloc(gfp_mask);
-
-	might_sleep_if(gfp_mask & __GFP_WAIT);
-
-	if (should_fail_alloc_page(gfp_mask, order))
-		return NULL;
-
-	/*
-	 * Check the zones suitable for the gfp_mask contain at least one
-	 * valid zone. It's possible to have an empty zonelist as a result
-	 * of __GFP_THISNODE and a memoryless node
-	 */
-	if (unlikely(!zonelist->_zonerefs->zone))
-		return NULL;
-	/* 如果使能了CONFIG_CMA，则允许从CMA区域分配 */
-	if (IS_ENABLED(CONFIG_CMA) && ac.migratetype == MIGRATE_MOVABLE)
-		alloc_flags |= ALLOC_CMA;
-
-retry_cpuset:
-	/* 获取读锁 */
-	cpuset_mems_cookie = read_mems_allowed_begin();
-
-	/* We set it here, as __alloc_pages_slowpath might have changed it */
-	ac.zonelist = zonelist;
-	/* The preferred zone is used for statistics later */
-	/* 
-	 * 获取链表中第一个zone，每一次retry_cpuset就是尝试在下一个zone进行分配
-     */
-	preferred_zoneref = first_zones_zonelist(ac.zonelist, ac.high_zoneidx,
-				ac.nodemask ? : &cpuset_current_mems_allowed,
-				&ac.preferred_zone);
-	if (!ac.preferred_zone)
-		goto out;
-	ac.classzone_idx = zonelist_zone_idx(preferred_zoneref);
-
-	/* 它限制只在分配到当前进程的各个CPU所关联的结点分配内存 */
-	alloc_mask = gfp_mask|__GFP_HARDWALL;
-	/* 第一次尝试分配页框(快速分配)
-     * 快速分配时以low阀值为标准
-     * 遍历zonelist，尝试获取2的order次方个连续的页框 
-     * 在遍历zone时，如果此zone当前空闲内存减去需要申请的内存之后，空闲内存是低于low阀值，那么此zone会进行快速内存回收
-	 * 具体分配流程见下
-     */
-	page = get_page_from_freelist(alloc_mask, order, alloc_flags, &ac);
-	if (unlikely(!page)) {
-		/*
-		 * Runtime PM, block IO and its error handling path
-		 * can deadlock because I/O on the device might not
-		 * complete.
-		 * 快速分配没有成功，则下面要进行慢速分配；其中就有可能触发页面压缩、页面回收，过程中涉及页面换出
-		 * 如果当前分配task_struct->flags标识有PF_MEMALLOC_NOIO标识，则分配页框过程中不允许有页面换出动作
-		 * 则在alloc_mask中需要把__GFP_IO和__GFP_FS清除
-		 */
-		alloc_mask = memalloc_noio_flags(gfp_mask);
-        /* 如果之前没有分配成功，这里尝试进入慢速分配，主要流程如下： 
-         * 1. 慢速分配首先会唤醒所有符合条件zone的kswapd线程进行内存回收
-		 * 2. 再次尝试快速分配；疑问：唤醒回收线程后，不需要等待？
-         * 3. 如果标记了忽略阀值，则从保留的内存里回收(__alloc_pages_high_priority)
-         * 4. 然后进行内存压缩(__alloc_pages_direct_compact), 其中会尝试再次快速分配
-         * 5. 最后再尝试直接内存回收，触发OOM(out_of_memory),前提是所有zones的ZONE_OOM_LOCKED锁均未被占用
-		 * 6. 如果判断需要retry，则再次尝试1,2,3,4
+    /* 初始化两个链表头 */
+	LIST_HEAD(ret_pages);
+    /* 这个链表保存本次回收就可以立即进行释放的页 */
+	LIST_HEAD(free_pages);
+	int pgactivate = 0;
+	unsigned long nr_unqueued_dirty = 0;
+	unsigned long nr_dirty = 0;
+	unsigned long nr_congested = 0;
+	unsigned long nr_reclaimed = 0;
+	unsigned long nr_writeback = 0;
+	unsigned long nr_immediate = 0;
+    /* 检查是否需要调度，需要则调度 */
+	cond_resched();
+    /* 循环page_list，将其中的页一个一个释放 */
+	while (!list_empty(page_list)) {
+		struct address_space *mapping;
+		struct page *page;
+		int may_enter_fs;
+		enum page_references references = PAGEREF_RECLAIM_CLEAN;
+		bool dirty, writeback;
+        /* 检查是否需要调度，需要则调度 */
+		cond_resched();
+        /* 从page_list末尾拿出一个页 */
+		page = lru_to_page(page_list);
+        /* 将此页从page_list中删除 */
+		list_del(&page->lru);
+        /* 尝试对此页上锁，如果无法上锁，说明此页正在被其他路径控制，跳转到keep 
+         * 对页上锁后，所有访问此页的进程都会加入到zone->wait_table[hash_ptr(page, zone->wait_table_bits)]
          */
-		page = __alloc_pages_slowpath(alloc_mask, order, &ac);
-	}
-	/*  接下去两个动作是为实现kmemchek动态内存检测工具，具体可以查阅资料 */
-	if (kmemcheck_enabled && page)
-		kmemcheck_pagealloc_alloc(page, order, gfp_mask);
+		if (!trylock_page(page))
+			goto keep;
+        /* 在page_list的页一定都是非活动的 */
+		VM_BUG_ON_PAGE(PageActive(page), page);
+        /* 页所属的zone也要与传入的zone一致 */
+		VM_BUG_ON_PAGE(page_zone(page) != zone, page);
+        /* 扫描的页数量++ */
+		sc->nr_scanned++;
+        /* 如果此页被锁在内存中，则跳转到cull_mlocked */   
+		if (unlikely(!page_evictable(page)))
+			goto cull_mlocked;
+        /* 如果扫描控制结构中标识不允许进行unmap操作，并且此页有被映射到页表中，跳转到keep_locked */
+		if (!sc->may_unmap && page_mapped(page))
+			goto keep_locked;
 
-	trace_mm_page_alloc(page, order, alloc_mask, ac.migratetype);
-
-out:
-	/*
-	 * When updating a task's mems_allowed, it is possible to race with
-	 * parallel threads in such a way that an allocation can fail while
-	 * the mask is being updated. If a page allocation is about to fail,
-	 * check if the cpuset changed during allocation and if so, retry.
-	 */
-	 /* 如果都没有分配成功，这里会不停尝试重新分配，获取zonelist的下一个zone */
-	if (unlikely(!page && read_mems_allowed_retry(cpuset_mems_cookie)))
-		goto retry_cpuset;
-
-	return page;
-}
-EXPORT_SYMBOL(__alloc_pages_nodemask);
-
-
-
-### get_page_from_freelist
-
-/*
- * get_page_from_freelist goes through the zonelist trying to allocate
- * a page.
- * 在zonelist中遍历所有zone，获取指定连续的页框数：
- * 1. 在遍历zone时，如果zone当前空闲内存-申请的内存<LOW,则该zone会触发内存回收
- * 2. 第一轮循环只会尝试从preferred_zone中获取页框
- * 3. 第二轮会遍历整个zonelist的zone
- */
-static struct page *
-get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
-						const struct alloc_context *ac)
-{
-	struct zonelist *zonelist = ac->zonelist;
-	struct zoneref *z;
-	struct page *page = NULL;
-	struct zone *zone;
-	nodemask_t *allowednodes = NULL;/* zonelist_cache approximation */
-	int zlc_active = 0;		/* set if using zonelist_cache */
-	int did_zlc_setup = 0;		/* just call zlc_setup() one time */
-	/* 是否考虑脏页过多的判断值，如果脏页过多，则不在此zone进行分配 */
-	bool consider_zone_dirty = (alloc_flags & ALLOC_WMARK_LOW) &&
-				(gfp_mask & __GFP_WRITE);
-	int nr_fair_skipped = 0;
-	bool zonelist_rescan;
-
-zonelist_scan:
-	zonelist_rescan = false;
-
-	/*
-	 * Scan zonelist, looking for a zone with enough free.
-	 * See also __cpuset_node_allowed() comment in kernel/cpuset.c.
-	 */
-	for_each_zone_zonelist_nodemask(zone, z, zonelist, ac->high_zoneidx,
-								ac->nodemask) {
-		unsigned long mark;
-	/*
-	 * 检查是否有必要在该zone尝试分配
-	 * 1. check zonelist_cache的full标志位
-	 */
-		if (IS_ENABLED(CONFIG_NUMA) && zlc_active &&
-			!zlc_zone_worth_trying(zonelist, z, allowednodes))
-				continue;
-	/*
-	* 检查此zone是否属于该CPU所允许分配的zone
-	* ALLOC_CPUSET: 仅允许在该CPU管辖的zone中分配
-	*/
-		if (cpusets_enabled() &&
-			(alloc_flags & ALLOC_CPUSET) &&
-			!cpuset_zone_allowed(zone, gfp_mask))
-				continue;
-		/*
-		 * ALLOC_FAIR: 只从preferred_zone所在node中的zone分配
-		 * 该机制保证第一轮循环只会从preferred_zone所在node分配，第二轮会去除该标志
-		 */
-		if (alloc_flags & ALLOC_FAIR) {
-		/* 判断zone和preferred_zone是否属于同一个node，不属于则跳出循环，因为后面的页不会属于此node了 */
-			if (!zone_local(ac->preferred_zone, zone))
-				break;
-			if (test_bit(ZONE_FAIR_DEPLETED, &zone->flags)) {
-				nr_fair_skipped++;
-				continue;
-			}
-		}
-		/* 如果gfp_mask中允许进行脏页回写，那么如果此zone在内存中有过多的脏页，则跳过此zone，不对此zone进行处理
-         * 这里大概意思是脏页过多，kswapd会将这些脏页进行回写，这里就不将这些脏页进行回写了，会增加整个zone的压力
+		/* Double the slab pressure for mapped and swapcache pages */
+        /* 对于处于swapcache中或者有进程映射了的页，对sc->nr_scanned再进行一次++
+         * swapcache用于在页换出到swap时，页会先跑到swapcache中，当此页完全写入swap分区后，在没有进程对此页进行访问时，swapcache才会释放掉此页
          */
-		if (consider_zone_dirty && !zone_dirty_ok(zone))
-			continue;
-		/* 选择分配阀值有alloc_min alloc_low alloc_high三种，要求分配后空闲页框数量不能少于阀值，默认是alloc_low */
-		mark = zone->watermark[alloc_flags & ALLOC_WMARK_MASK];
-        /* 根据阀值查看zone中是否有足够的空闲页框，空闲内存数量保存在 zone->vm_stat[NR_FREE_PAGES]
-		 * 算法: 分配后剩余的页框数量 > 阀值 + zone reserve，高于则返回true
-         * 三个阀值的大小关系是min < low < high
-         * high一般用于判断zone是否平衡
-         * 快速分配时，用的阀值是low
-         * 慢速分配中，用的阀值是min
-         * 在准备oom进程时，用的阀值是high
-         * 分配后剩余的页框数量 <= 阀值 + zone reserve: 进行快速内存回收
-         */		
-		if (!zone_watermark_ok(zone, order, mark,
-				       ac->classzone_idx, alloc_flags)) {
-			int ret;
+		if (page_mapped(page) || PageSwapCache(page))
+			sc->nr_scanned++;
+        /* 本次回收是否允许执行IO操作 */
+		may_enter_fs = (sc->gfp_mask & __GFP_FS) ||
+			(PageSwapCache(page) && (sc->gfp_mask & __GFP_IO));
 
-			/* Checked here to keep the fast path fast */
-			BUILD_BUG_ON(ALLOC_NO_WATERMARKS < NR_WMARK);
-			/* 如果分配标志中有 ALLOC_NO_WATERMARKS标志，代表无视阀值，直接分配 */
-			if (alloc_flags & ALLOC_NO_WATERMARKS)
-				goto try_this_zone;
 
-			if (IS_ENABLED(CONFIG_NUMA) &&
-					!did_zlc_setup && nr_online_nodes > 1) {
-				/* NUMA系统中如果使用了zlc(zonelist_cache)，则取出此zonelist允许的node列表 */
-				allowednodes = zlc_setup(zonelist, alloc_flags);
-				zlc_active = 1;
-				did_zlc_setup = 1;
-			}
-            /* 
-             * 判断是否对此zone进行内存回收，
-			 * 1. 开启了内存回收，对此zone进行内存回收
-			 * 2. 当内存回收未开启, 只会对距离比较近的zone进行回收
-             * 		zone_allows_reclaim(): 判断zone所在node是否与preferred_zone所在node的距离 < RECLAIM_DISTANCE(30或10)
-             */
-			if (zone_reclaim_mode == 0 ||
-			    !zone_allows_reclaim(ac->preferred_zone, zone))
-				goto this_zone_full;
+        /* 检查是否是脏页还有此页是否正在回写到磁盘 
+         * 这里面主要判断页描述符的PG_dirty和PG_writeback两个标志
+         * 匿名页当加入swapcache后，就会被标记PG_dirty
+         * 如果文件所属文件系统有特定is_dirty_writeback操作，则执行文件系统特定的is_dirty_writeback操作
+         */
+		page_check_dirty_writeback(page, &dirty, &writeback);
+        /* 如果是脏页或者正在回写的页，脏页数量++ */
+		if (dirty || writeback)
+			nr_dirty++;
+        /* 是脏页但并没有正在回写，则增加没有进行回写的脏页计数 */
+		if (dirty && !writeback)
+			nr_unqueued_dirty++;
 
-			/*
-			 * As we may have just activated ZLC, check if the first
-			 * eligible zone has failed zone_reclaim recently.
+        /* 获取此页对应的address_space，如果此页是匿名页，则为NULL */
+		mapping = page_mapping(page);
+        /* 如果此页映射的文件所在的磁盘设备等待队列中有数据(正在进行IO处理)或者此页已经在进行回写回收 */
+		if (((dirty || writeback) && mapping &&
+		     bdi_write_congested(inode_to_bdi(mapping->host))) ||
+		    (writeback && PageReclaim(page)))
+            /* 可能比较晚才能进行阻塞回写的页的数量 
+              * 因为磁盘设备现在繁忙，队列中有太多需要写入的数据
+              */
+			nr_congested++;
+
+		/*
+		 * If a page at the tail of the LRU is under writeback, there
+		 * are three cases to consider.
+		 *
+		 * 1) If reclaim is encountering an excessive number of pages
+		 *    under writeback and this page is both under writeback and
+		 *    PageReclaim then it indicates that pages are being queued
+		 *    for IO but are being recycled through the LRU before the
+		 *    IO can complete. Waiting on the page itself risks an
+		 *    indefinite stall if it is impossible to writeback the
+		 *    page due to IO error or disconnected storage so instead
+		 *    note that the LRU is being scanned too quickly and the
+		 *    caller can stall after page list has been processed.
+		 *
+		 * 2) Global reclaim encounters a page, memcg encounters a
+		 *    page that is not marked for immediate reclaim or
+		 *    the caller does not have __GFP_FS (or __GFP_IO if it's
+		 *    simply going to swap, not to fs). In this case mark
+		 *    the page for immediate reclaim and continue scanning.
+		 *
+		 *    Require may_enter_fs because we would wait on fs, which
+		 *    may not have submitted IO yet. And the loop driver might
+		 *    enter reclaim, and deadlock if it waits on a page for
+		 *    which it is needed to do the write (loop masks off
+		 *    __GFP_IO|__GFP_FS for this reason); but more thought
+		 *    would probably show more reasons.
+		 *
+		 * 3) memcg encounters a page that is not already marked
+		 *    PageReclaim. memcg does not have any dirty pages
+		 *    throttling so we could easily OOM just because too many
+		 *    pages are in writeback and there is nothing else to
+		 *    reclaim. Wait for the writeback to complete.
+		 */
+        /* 此页正在进行回写到磁盘，对于正在回写到磁盘的页，是无法进行回收的，除非等待此页回写完成 
+         * 此页正在进行回写有两种情况:
+         * 1.此页是正常的进行回写(脏太久了)
+         * 2.此页是刚不久前进行内存回收时，导致此页进行回写的
+         */
+		if (PageWriteback(page)) {
+
+			if (current_is_kswapd() &&
+			    PageReclaim(page) &&
+			    test_bit(ZONE_WRITEBACK, &zone->flags)) {
+			/* 情况1：
+			 * 当处于kswapd内核进程，且此页正在进行回收，然后zone也表明了多页正在回写
+			 * 说明此页是已经回写到磁盘，且正在进行回收的，本次回收不需要对此页进行
 			 */
-			if (IS_ENABLED(CONFIG_NUMA) && zlc_active &&
-				!zlc_zone_worth_trying(zonelist, z, allowednodes))
-				continue;
-            /*
-             * 内存回收： 回收到了2^order数量的页框时，才会返回真，即使回收了，没达到这个数量，也返回假；
-			 * 内存回收原理另分析
+				nr_immediate++;/* 增加nr_immediate计数，此计数说明此页准备就可以回收了 */
+				goto keep_locked;
+
+			/* Case 2 above */
+			} else if (global_reclaim(sc) ||
+			    !PageReclaim(page) || !may_enter_fs) {
+            /* 此页正在进行正常的回写(不是因为要回收此页才进行的回写)
+             * 两种情况会进入这里:
+             * 1.本次是针对整个zone进行内存回收的
+             * 2.本次回收不允许进行IO操作
              */
-			ret = zone_reclaim(zone, gfp_mask, order);
-			switch (ret) {
-			case ZONE_RECLAIM_NOSCAN:
-				/* did not scan */
-				continue;
-			case ZONE_RECLAIM_FULL:
-				/* scanned but unreclaimable */
-				continue;
-			default:
-				/*
-				* 回收到了一些或者回收到了2^order个页框 
-				* 检查是否满足水位要求，同理
-				*/
-				if (zone_watermark_ok(zone, order, mark,
-						ac->classzone_idx, alloc_flags))
-					goto try_this_zone;
+		/* 设置此页正在进行回收，回写完成后会检测PG_reclaim标志，置位则会被放到非活动lru链表末尾 */
+				SetPageReclaim(page);
+				nr_writeback++;/* 增加需要回写计数器 */
 
-				/*
-				 * 无法回收到足够内存：
-				 * 1. 如果是按WMARK_MIN进行分配
-				 * 2. 已经回收到一些内存
-				 * ===》调到this_zone_full===》标记zone
-				 */
-				if (((alloc_flags & ALLOC_WMARK_MASK) == ALLOC_WMARK_MIN) ||
-				    ret == ZONE_RECLAIM_SOME)
-					goto this_zone_full;
+				goto keep_locked;
 
-				continue;
+			/* Case 3 above */
+			} else {
+		/* 等待此页回写完成，回写完成后，尝试对此页进行回收，只有针对某个memcg进行回收时才会进入这 */
+				wait_on_page_writeback(page);
 			}
 		}
 
-try_this_zone:
-        /* 
-		 * 尝试从这个zone获取连续页框：
-         * 只有当此zone中空闲页框数量 - 本次需要分配的数量 > 此zone的low阀值，这样才能执行到这
-         * 如果本意从preferred_zone分配内存，但是preferred_zone没有足够内存，到了此zone进行分配，那么分配的页数量会统计到此zone的NR_ALLOC_BATCH
+		if (!force_reclaim)
+			references = page_check_references(page, sc);
+        /*
+         * 此次回收时非强制进行回收，那要先判断此页需不需要移动到活动lru链表
+         * 如果是匿名页，只要最近此页被进程访问过，则将此页移动到活动lru链表头部，否则回收
+         * 如果是映射可执行文件的文件页，只要最近被进程访问过，就放到活动lru链表，否则回收
+         * 如果是其他的文件页，如果最近被多个进程访问过，移动到活动lru链表，如果只被1个进程访问过，但是PG_referenced置位了，也放入活动lru链表，其他情况回收
          */
-		page = buffered_rmqueue(ac->preferred_zone, zone, order,
-						gfp_mask, ac->migratetype);
-		if (page) {
-		/*
-		* page出炉前做一些准备：
-		1. kasan数据准备
-		*/
-			if (prep_new_page(page, order, gfp_mask, alloc_flags))
-				goto try_this_zone;
-			return page;
+		switch (references) {
+		case PAGEREF_ACTIVATE:        /* 将页放到活动lru链表中 */
+			goto activate_locked;
+		case PAGEREF_KEEP:	/* 页继续保存在非活动lru链表中 */
+			goto keep_locked;
+        /* 这两个在下面的代码都会尝试回收此页 
+         * 注意页所属的vma标记了VM_LOCKED时也会是PAGEREF_RECLAIM，因为后面会要把此页放到lru_unevictable_page链表
+         */
+		case PAGEREF_RECLAIM:
+		case PAGEREF_RECLAIM_CLEAN:
+			; /* try to reclaim the page below */
 		}
-this_zone_full:
-		if (IS_ENABLED(CONFIG_NUMA) && zlc_active)
-		/* 在zonelist的zonelist_cache中标记此node为满状态 */
-			zlc_mark_zone_full(zonelist, z);
-	}
 
-    /* 
-	 * 如果第一次ALLOC_FAIR分配没有能够分配到内存，第二次尝试非ALLOC_FAIR分配 
-     * 第二次会遍历zonelist中其他node上的zone
-     */
-	if (alloc_flags & ALLOC_FAIR) {
-		alloc_flags &= ~ALLOC_FAIR;
-		/* nr_fair_skipped不为0，说明此node有些zone的batch页已经用尽，这里要增加一些给它 */
-		if (nr_fair_skipped) {
-			zonelist_rescan = true;
-			/* 
-			 * 重新设置除目标zone之外，node中在此目标zone前面的zone的batch页数量大小 
-             * 设置为: batch页数量 = high阀值 - 低阀值 - 当前batch数量
+        /* page为匿名页，但是又不处于swapcache中，这里会尝试将其加入到swapcache中 */
+		if (PageAnon(page) && !PageSwapCache(page)) {
+            /* 如果本次回收禁止io操作，则跳转到keep_locked，让此匿名页继续在非活动lru链表中 */
+			if (!(sc->gfp_mask & __GFP_IO))
+				goto keep_locked;
+            /* 将页page加入到swap_cache，然后这个页被视为文件页，起始就是将页描述符信息保存到以swap页槽偏移量为索引的结点
+			 * 设置页描述符的private = swap页槽偏移量生成的页表项swp_entry_t，因为后面会设置所有映射了此页的页表项为此swp_entry_t
+			 * 设置页的PG_swapcache标志，表明此页在swapcache中，正在被换出
+			 * 标记页page为脏页(PG_dirty)，后面就会被换出
+			 */
+            /* 执行成功后，页属于swapcache，并且此页的page->_count会++，目前引用此页的进程页表没有设置，进程还是可以正常访问这个页 */
+			if (!add_to_swap(page, page_list))
+				goto activate_locked;/* 失败，将此页加入到活动lru链表中 */
+			may_enter_fs = 1;/* 设置可能会用到文件系统相关的操作 */
+
+            /* 获取此匿名页所在的swapcache的address_space，这个是根据page->private中保存的swp_entry_t获得 */
+			mapping = page_mapping(page);
+		}
+
+        /* 这里是要对所有映射了此page的页表进行设置
+         * 匿名页会把对应的页表项设置为之前获取的swp_entry_t
+         */
+		if (page_mapped(page) && mapping) {
+            /* 通过RMAP对所有映射了此页的进程的页表进行此页的unmap操作
+             * ttu_flags基本都有TTU_UNMAP标志
+             * 如果是匿名页，那么page->private中是一个带有swap页槽偏移量的swp_entry_t，此后这个swp_entry_t可以转为页表项
+             * 执行完此后，匿名页在swapcache中，而对于引用了此页的进程而言，此页已经在swap中
+             * 但是当此匿名页还没有完全写到swap中时，如果此时有进程访问此页，会将此页映射到此进程页表中，并取消此页放入swap中的操作，放回匿名页的lru链表(在缺页中断中完成)
+             * 而对于文件页，只需要清空映射了此页的进程页表的页表项，不需要设置新的页表项
+             * 每一个进程unmap此页，此页的page->_count--
+             * 如果反向映射过程中page->_count == 0，则释放此页
              */
-			reset_alloc_batches(ac->preferred_zone);
+			switch (try_to_unmap(page, ttu_flags)) {
+			case SWAP_FAIL:
+				goto activate_locked;
+			case SWAP_AGAIN:
+				goto keep_locked;
+			case SWAP_MLOCK:
+				goto cull_mlocked;
+			case SWAP_SUCCESS:
+				; /* try to free the page below */
+			}
 		}
-		if (nr_online_nodes > 1)
-			zonelist_rescan = true;
+        /* 如果页为脏页，有两种页
+         * 一种是当匿名页加入到swapcache中时，就被标记为了脏页
+         * 一种是脏的文件页
+         */
+		if (PageDirty(page)) {
+            /* 只有kswapd内核线程能够进行文件页的回写操作(kswapd中不会造成栈溢出?)，但是只有当zone中有很多脏页时，kswapd也才能进行脏文件页的回写
+             * 此标记说明zone的脏页很多，在回收时隔离出来的页都是没有进行回写的脏页时设置
+             * 也就是此zone脏页不够多，kswapd不用进行回写操作
+             * 当短时间内多次对此zone执行内存回收后，这个ZONE_DIRTY就会被设置，这样做的理由是: 优先回收匿名页和干净的文件页，说不定回收完这些zone中空闲内存就足够了，不需要再进行内存回收了
+             * 而对于匿名页，无论是否是kswapd都可以进行回写
+             */
+			if (page_is_file_cache(page) &&
+					(!current_is_kswapd() ||
+					 !test_bit(ZONE_DIRTY, &zone->flags))) {
+                /* 增加优先回收页的数量 */
+				inc_zone_page_state(page, NR_VMSCAN_IMMEDIATE);
+                /* 设置此页需要回收，这样当此页回写完成后，就会被放入到非活动lru链表尾部 
+                 * 不过可惜这里只能等kswapd内核线程对此页进行回写，要么就等系统到期后自动将此页进行回写，非kswapd线程都不能对文件页进行回写
+                 */
+				SetPageReclaim(page);
+                /* 让页移动到非活动lru链表头部，如上所说，当回写完成后，页会被移动到非活动lru链表尾部，而内存回收是从非活动lru链表尾部拿页出来回收的 */
+				goto keep_locked;
+			}
+            /* 当zone没有标记ZONE_DIRTY时，kswapd内核线程则会执行到这里 */
+            /* 当page_check_references()获取页的状态是PAGEREF_RECLAIM_CLEAN，则跳到keep_locked
+             * 页最近没被进程访问过，但此页的PG_referenced被置位
+             */
+			if (references == PAGEREF_RECLAIM_CLEAN)
+				goto keep_locked;
+            /* 回收不允许执行文件系统相关操作，则让页移动到非活动lru链表头部 */
+			if (!may_enter_fs)
+				goto keep_locked;
+            /* 回收不允许进行回写，则让页移动到非活动lru链表头部 */
+			if (!sc->may_writepage)
+				goto keep_locked;
+
+            /* 将页进行回写到磁盘，这里只是将页加入到块层，调用结束并不是代表此页已经回写完成
+             * 主要调用page->mapping->a_ops->writepage进行回写，对于匿名页，也是swapcache的address_space->a_ops->writepage
+             * 页被加入到块层回写队列后，会置位页的PG_writeback，回写完成后清除PG_writeback位，所以在同步模式回写下，结束后PG_writeback位是0的，而异步模式下，PG_writeback很可能为1
+             * 此函数中会清除页的PG_dirty标志
+             * 会标记页的PG_reclaim
+             * 成功将页加入到块层后，页的PG_lock位会清空
+             * 也就是在一个页成功进入到回收导致的回写过程中，它的PG_writeback和PG_reclaim标志会置位，而它的PG_dirty和PG_lock标志会清除
+             * 而此页成功回写后，它的PG_writeback和PG_reclaim位都会被清除
+             */
+			switch (pageout(page, mapping, sc)) {
+			case PAGE_KEEP:
+				goto keep_locked;                /* 页会被移动到非活动lru链表头部 */
+			case PAGE_ACTIVATE:
+				goto activate_locked;/* 页会被移动到活动lru链表 */
+			case PAGE_SUCCESS:
+                /* 到这里，页的锁已经被释放，也就是PG_lock被清空 
+                 * 对于同步回写(一些特殊文件系统只支持同步回写)，这里的PG_writeback、PG_reclaim、PG_dirty、PG_lock标志都是清0的
+                 * 对于异步回写，PG_dirty、PG_lock标志都是为0，PG_writeback、PG_reclaim可能为1可能为0(回写完成为0，否则为1)
+                 */
+                /* 如果PG_writeback被置位，说明此页正在进行回写，这种情况是异步才会发生 */
+				if (PageWriteback(page))
+					goto keep;
+                /* 此页为脏页，这种情况发生在此页最近又被写入了，让其保持在非活动lru链表中 
+                 * 还有一种情况，就是匿名页加入到swapcache前，已经没有进程映射此匿名页了，而加入swapcache时不会判断
+                 * 但是当对此匿名页进行回写时，会判断此页加入swapcache前是否有进程映射了，如果没有，此页可以直接释放，不需要写入磁盘
+                 * 所以在此匿名页回写过程中，就会将此页从swap分区的address_space中的基树拿出来，然后标记为脏页，到这里就会进行判断脏页，之后会释放掉此页
+                 */
+				if (PageDirty(page))
+					goto keep;
+
+                /* 尝试上锁，因为在pageout中会释放page的锁，主要是PG_lock标志 */
+				if (!trylock_page(page))
+					goto keep;
+				if (PageDirty(page) || PageWriteback(page))
+					goto keep_locked;
+				mapping = page_mapping(page);                /* 获取page->mapping */
+            /* 这个页不是脏页，不需要回写，这种情况只发生在文件页，匿名页当加入到swapcache中时就被设置为脏页 */
+			case PAGE_CLEAN:
+				; /* try to free the page below */
+			}
+		}
+
+        /* 这里的情况只有页已经完成回写后才会到达这里，比如同步回写时(pageout在页回写完成后才返回)，异步回写时，在运行到此之前已经把页回写到磁盘
+         * 没有完成回写的页不会到这里，在pageout()后就跳到keep了
+         */
+        /* 通过页描述符的PAGE_FLAGS_PRIVATE标记判断是否有buffer_head，这个只有文件页有
+         * 这里不会通过page->private判断，原因是，当匿名页加入到swapcache时，也会使用page->private，而不会标记PAGE_FLAGS_PRIVATE
+         * 只有文件页会使用这个PAGE_FLAGS_PRIVATE，这个标记说明此文件页的page->private指向struct buffer_head链表头
+         */
+		if (page_has_private(page)) {
+            /* 因为页已经回写完成或者是干净不需要回写的页，释放page->private指向struct buffer_head链表，释放后page->private = NULL 
+             * 释放时必须要保证此页的PG_writeback位为0，也就是此页已经回写到磁盘中了
+             */
+			if (!try_to_release_page(page, sc->gfp_mask))
+				goto activate_locked;                /* 释放失败，把此页移动到活动lru链表 */
+            /* 一些特殊的页的mapping为空，比如一些日志的缓冲区，对于这些页如果引用计数为1则进行处理 */
+			if (!mapping && page_count(page) == 1) {
+				unlock_page(page);
+				if (put_page_testzero(page))/* 对page->_count--，并判断是否为0，如果为0则释放掉此页 */
+					goto free_it;
+				else {
+					/*
+					 * rare race with speculative reference.
+					 * the speculative reference will free
+					 * this page shortly, so we may
+					 * increment nr_reclaimed here (and
+					 * leave it off the LRU).
+					 */
+					nr_reclaimed++;
+					continue;
+				}
+			}
+		}
+        /* 
+         * 经过上面的步骤，在没有进程再对此页进行访问的前提下，page->_count应该为2
+         * 表示只有将此页隔离出lru的链表和加入address_space的基树中对此页进行了引用，已经没有其他地方对此页进行引用，
+         * 然后将此页从address_space的基数中移除，然后page->_count - 2，这个页现在就只剩等待着被释放掉了
+         * 如果是匿名页，则是对应的swapcache的address_space的基树
+         * 如果是文件页，则是对应文件的address_space的基树
+         * 当page->_count为2时，才会将此页从address_space的基数中移除，然后再page->_count - 2
+         * 相反，如果此page->_count不为2，说明unmap后又有进程访问了此页，就不对此页进行释放了
+         * 同时，这里对于脏页也不能够进行释放，想象一下，如果一个进程访问了此页，写了数据，又unmap此页，那么此页的page->_count为2，同样也可以释放掉，但是写入的数据就丢失了
+         * 成功返回1，失败返回0
+         */
+		if (!mapping || !__remove_mapping(mapping, page, true))
+			goto keep_locked;
+
+		/*
+		 * At this point, we have no other references and there is
+		 * no way to pick any more up (removed from LRU, removed
+		 * from pagecache). Can use non-atomic bitops now (and
+		 * we obviously don't have to worry about waking up a process
+		 * waiting on the page lock, because there are no references.
+		 */
+		__clear_page_locked(page);
+free_it:
+        /* page->_count为0才会到这 */
+        
+        /* 此页可以马上回收，会把它加入到free_pages链表
+         * 到这里的页有三种情况，本次进行同步回写的页，干净的不需要回写的页，之前异步回收时完成异步回写的页
+         * 之前回收进行异步回写的页，不会立即释放，因为上次回收时，对这些页进行的工作有: 
+         * 匿名页: 加入swapcache，反向映射修改了映射了此页的进程页表项，将此匿名页回写到磁盘，将此页保存到非活动匿名页lru链表尾部
+         * 文件页: 反向映射修改了映射了此页的进程页表项，将此文件页回写到磁盘，将此页保存到非活动文件页lru链表尾部
+         * 也就是异步情况这两种页都没有进行实际的回收，而在这些页回写完成后，再进行回收时，这两种页的流程都会到这里进行回收
+         * 也就是本次能够真正回收到的页，可能是之前进行回收时已经处理得差不多并回写完成的页
+         */
+		nr_reclaimed++;
+
+		/*
+		 * Is there need to periodically free_page_list? It would
+		 * appear not as the counts should be low
+		 */
+		list_add(&page->lru, &free_pages);/* 加入到free_pages链表 */
+		continue;
+
+cull_mlocked:
+        /* 当前页被mlock所在内存中的情况 */
+
+        /* 此页为匿名页并且已经放入了swapcache中了 */
+		if (PageSwapCache(page))
+            /* 从swapcache中释放本页在基树的结点，会page->_count-- */
+			try_to_free_swap(page);
+		unlock_page(page);
+        /* 把此页放回到lru链表中，因为此页已经被隔离出来了
+         * 加入可回收lru链表后page->_count++，但同时也会释放隔离的page->_count--
+         * 加入unevictablelru不会进行page->_count++
+         */
+		list_add(&page->lru, &ret_pages);
+		continue;
+
+activate_locked:
+		/* Not a candidate for swapping, so reclaim swap space. */
+        /* 这种是持有页锁(PG_lock)，并且需要把页移动到活动lru链表中的情况 */
+
+        /* 如果此页为匿名页并且放入了swapcache中，并且swap使用率已经超过了50% */
+		if (PageSwapCache(page) && vm_swap_full())
+			try_to_free_swap(page);/* 将此页从swapcache的基树中拿出来 */
+		VM_BUG_ON_PAGE(PageActive(page), page);
+		SetPageActive(page);/* 设置此页为活动页 */;
+		pgactivate++;/* 需要放回到活动lru链表的页数量 */
+keep_locked:
+        /* 希望页保持在原来的lru链表中，并且持有页锁的情况 */
+
+        /* 释放页锁(PG_lock) */
+		unlock_page(page);
+keep:
+        /* 希望页保持在原来的lru链表中的情况 */
+
+        /* 把页加入到ret_pages链表中 */
+		list_add(&page->lru, &ret_pages);
+		VM_BUG_ON_PAGE(PageLRU(page) || PageUnevictable(page), page);
 	}
 
-	if (unlikely(IS_ENABLED(CONFIG_NUMA) && zlc_active)) {
-		/* 禁止zonelist_cache，zonelist_cache用于快速扫描的，它标记着哪个node有空闲内存哪个node没有，扫描时就跳过某些node */
-		zlc_active = 0;
-		zonelist_rescan = true;
-	}
-	/* 跳回去，尝试再次扫描一遍zonelist，这里最多只会进行一次再次扫描，因为第二次就不会把 zonelist_rescan 设置为true了 */
-	if (zonelist_rescan)
-		goto zonelist_scan;
+	mem_cgroup_uncharge_list(&free_pages);
+    /* 将free_pages中的页释放 */
+	free_hot_cold_page_list(&free_pages, true);
+    /* 将ret_pages链表加入到page_list中 */
+	list_splice(&ret_pages, page_list);
+	count_vm_events(PGACTIVATE, pgactivate);
 
-	return NULL;
+	*ret_nr_dirty += nr_dirty;
+	*ret_nr_congested += nr_congested;
+	*ret_nr_unqueued_dirty += nr_unqueued_dirty;
+	*ret_nr_writeback += nr_writeback;
+	*ret_nr_immediate += nr_immediate;
+	return nr_reclaimed;
 }
-
-## 附录
-
-### zonelist type
-
-/* 这几个链表主要用于反内存碎片 */
-enum {
-    MIGRATE_UNMOVABLE,         /* 页框内容不可移动,在内存中位置必须固定，无法移动到其他地方，核心内核分配的大部分页面都属于这一类。 */
-    MIGRATE_RECLAIMABLE,         /* 页框内容可回收,不能直接移动，但是可以回收，因为还可以从某些源重建页面，比如映射文件的数据属于这种类别，kswapd会按照一定的规则，周期性的回收这类页面。 */
-    MIGRATE_MOVABLE,             /* 页框内容可移动，属于用户空间应用程序的页属于此类页面，它们是通过页表映射的，因此我们只需要更新页表项，并把数据复制到新位置就可以了
-                                 * 当然要注意，一个页面可能被多个进程共享，对应着多个页表项。 
-                                 */
-    MIGRATE_PCPTYPES,             /* 用来表示每CPU页框高速缓存的数据结构中的链表的迁移类型数目 */
-    MIGRATE_RESERVE = MIGRATE_PCPTYPES,     
-#ifdef CONFIG_CMA
-    MIGRATE_CMA,                   /* 预留一段的内存给驱动使用，但当驱动不用的时候，伙伴系统可以分配给用户进程用作匿名内存或者页缓存。而当驱动需要使用时，就将进程占用的内存通过回收或者迁移的方式将之前占用的预留内存腾出来，供驱动使用。 */
-#endif   
-#ifdef CONFIG_MEMORY_ISOLATION
-    MIGRATE_ISOLATE,            /* 不能从这个链表分配页框，因为这个链表专门用于NUMA结点移动物理内存页，将物理内存页内容移动到使用这个页最频繁的CPU */
-#endif
-    MIGRATE_TYPES
-};
+```
 
 
-### zone_modify
+## 参考资料
 
-#define __GFP_DMA   ((__force gfp_t)0x01u)   
-#define __GFP_HIGHMEM   ((__force gfp_t)0x02u)   
-#define __GFP_DMA32 ((__force gfp_t)0x04u)  
-#define __GFP_MOVABLE ((__force gfp_t)0x08u)
-
-### zone_action
-#define __GFP_WAIT  ((__force gfp_t)0x10u)  //表示分配内存的请求可以中断。也就是说，调度器在该请求期间可随意选择另一个过程执行，或者该请求可以被另一个更重要的事件中断。   
-#define __GFP_HIGH  ((__force gfp_t)0x20u)  //如果请求非常重要，则设置__GFP_HIGH，即内核急切的需要内存时。在分配内存失败可能给内核带来严重得后果时，一般会设置该标志   
-#define __GFP_IO    ((__force gfp_t)0x40u)  //在查找空闲内存期间内核可以进行I/O操作。这意味着如果内核在内存分配期间换出页，那么仅当设置该标志时，才能将选择的页写入磁盘。   
-#define __GFP_FS    ((__force gfp_t)0x80u)  //允许内核执行VFS操作   
-#define __GFP_COLD  ((__force gfp_t)0x100u) //如果需要分配不在CPU高速缓存中的“冷”页时，则设置__GFP_COLD。   
-#define __GFP_NOWARN    ((__force gfp_t)0x200u) //在分配失败时禁止内核故障警告。   
-#define __GFP_REPEAT    ((__force gfp_t)0x400u) //在分配失败后自动重试，但在尝试若干次之后会停止。   
-#define __GFP_NOFAIL    ((__force gfp_t)0x800u) //在分配失败后一直重试，直至成功。   
-#define __GFP_NORETRY   ((__force gfp_t)0x1000u)//不重试，可能失败   
-#define __GFP_COMP  ((__force gfp_t)0x4000u)//增加复合页元数据   
-#define __GFP_ZERO  ((__force gfp_t)0x8000u)//在分配成功时，将返回填充字节0的页。   
-#define __GFP_NOMEMALLOC ((__force gfp_t)0x10000u) //不适用紧急分配链表   
-#define __GFP_HARDWALL   ((__force gfp_t)0x20000u) //只在NUMA系统上有意义。它限制只在分配到当前进程的各个CPU所关联的结点分配内存。如果进程允许在所有的CPU上运行（默认情况下），该标志是没有意义的。只有进程可以运行的CPU受限时，该标志才有意义。   
-#define __GFP_THISNODE  ((__force gfp_t)0x40000u)//页只在NUMA系统上有意义，如果设置该比特位，则内存分配失败的情况下不允许使用其他结点作为备用，需要保证在当前结点或者明确指定的结点上成功分配内存。   
-#define __GFP_RECLAIMABLE ((__force gfp_t)0x80000u) //将分配的内存标记为可回收   
-#define __GFP_MOVABLE   ((__force gfp_t)0x100000u)  //将分配的内存标记为可移动   
-  
-#define __GFP_BITS_SHIFT 21 /* Room for 21 __GFP_FOO bits */   
-#define __GFP_BITS_MASK ((__force gfp_t)((1 << __GFP_BITS_SHIFT) - 1))   
-  
-/* This equals 0, but use constants in case they ever change */  
-#define GFP_NOWAIT  (GFP_ATOMIC & ~__GFP_HIGH)  
-
-### fallbacks 
-
-static int fallbacks[MIGRATE_TYPES][4] = {
-    [MIGRATE_UNMOVABLE]   = { MIGRATE_RECLAIMABLE, MIGRATE_MOVABLE,     MIGRATE_RESERVE },
-    [MIGRATE_RECLAIMABLE] = { MIGRATE_UNMOVABLE,   MIGRATE_MOVABLE,     MIGRATE_RESERVE },
-#ifdef CONFIG_CMA
-    [MIGRATE_MOVABLE]     = { MIGRATE_CMA,         MIGRATE_RECLAIMABLE, MIGRATE_UNMOVABLE, MIGRATE_RESERVE },
-    [MIGRATE_CMA]         = { MIGRATE_RESERVE }, /* Never used */
-#else
-    [MIGRATE_MOVABLE]     = { MIGRATE_RECLAIMABLE, MIGRATE_UNMOVABLE,   MIGRATE_RESERVE },
-#endif
-    [MIGRATE_RESERVE]     = { MIGRATE_RESERVE }, /* Never used */
-#ifdef CONFIG_MEMORY_ISOLATION
-    [MIGRATE_ISOLATE]     = { MIGRATE_RESERVE }, /* Never used */
-#endif
-};
-
-### 关键结构体简介
-
-typedef struct pglist_data {
-	/* 本node管辖的zones：ZONE_HIGHMEM, ZONE_NORMAL, ZONE_DMA.*/
-	struct zone node_zones[MAX_NR_ZONES];
-	/* zone节点备用链表, UMA只有一条，NUMA有两条，在start_kernel->build_all_zonelists->...->build_zonelists中初始化 */
-	struct zonelist node_zonelists[MAX_ZONELISTS];
-	/* zone数量 */
-	int nr_zones;
-#ifdef CONFIG_FLAT_NODE_MEM_MAP	/* means !SPARSEMEM */
-	/* 指向mem_map属于本节点的第一个页表描述符, struct page数组的第一个page，代表了节点的所有物理帧*/
-	struct page *node_mem_map;
-#ifdef CONFIG_PAGE_EXTENSION
-	struct page_ext *node_page_ext;
-#endif
-#endif
-#ifndef CONFIG_NO_BOOTMEM
-	struct bootmem_data *bdata;
-#endif
-#ifdef CONFIG_MEMORY_HOTPLUG
-	spinlock_t node_size_lock;
-#endif
-	/* 节点第一个页面帧逻辑编号，所有页帧是依次编号的，每个页帧的号码都是全局唯一的。在UMA中总是0 */
-	unsigned long node_start_pfn;
-	unsigned long node_present_pages; /* total number of physical pages */
-	/* node_spanned_pages=node_end_pfn-node_start_pfn */
-	unsigned long node_spanned_pages; /* total size of physical page
-					     range, including holes */
-	/* 这是从0开始的节点号（NID） */
-	int node_id;
-	/* 交换守护进程的等待队列 */
-	wait_queue_head_t kswapd_wait;
-	/* 直接内存回收中的等待队列 */
-	wait_queue_head_t pfmemalloc_wait;
-	/* 指向该节点的kswapd守护进程，该进程用于释放页面 */
-	struct task_struct *kswapd;	/* Protected by
-					   mem_hotplug_begin/end() */
-	/* 用于页交换子系统的实现，用来定义需要释放的区域的长度 */
-	int kswapd_max_order;
-	/* ZONE_HIGHMEM, ZONE_NORMAL或 ZONE_DMA */
-	enum zone_type classzone_idx;
-#ifdef CONFIG_NUMA_BALANCING
-	/* Lock serializing the migrate rate limiting window */
-	spinlock_t numabalancing_migrate_lock;
-
-	/* Rate limiting time interval */
-	unsigned long numabalancing_migrate_next_window;
-
-	/* Number of pages migrated during the rate limiting time interval */
-	unsigned long numabalancing_migrate_nr_pages;
-#endif
-} pg_data_t;
-
-struct zonelist {
-	/* 当前node, 每个zone的备份列表. 在当前节点的zone中无可用内存时，会向这些备用节点进行分配 */
-	struct zonelist_cache *zlcache_ptr;		     // NULL or &zlcache
-	/* 在当前节点中所有zone列表 */
-	struct zoneref _zonerefs[MAX_ZONES_PER_ZONELIST + 1];
-#ifdef CONFIG_NUMA
-	/* 用于优化，通过位图指示相应的zone是否有内存可用 */
-	struct zonelist_cache zlcache;			     // optional ...
-#endif
-}
-/* 描述内存节点的备用zone列表描述符，用于性能优化，在高版本内核中，由于加入了直接回收机制，被逐渐的弱化了 */
-struct zonelist_cache {
-	unsigned short z_to_n[MAX_ZONES_PER_ZONELIST];		/* zone->nid */
-	DECLARE_BITMAP(fullzones, MAX_ZONES_PER_ZONELIST);	/* zone full? */
-	/* 
-	* 最后检查时间，在zlc_setup()会被更新
-	* zlc_setup(): 内存分配是跳过不在cpuset中的，以及最近被标识为full的
-	*/
-	unsigned long last_full_zap;		/* when last zap'd (jiffies) */
-}
-
-参考资料：
-
-[伙伴系统](https://www.cnblogs.com/tolimit/p/4610974.html)
-
-[节点初始化](https://blog.csdn.net/wyy4045/article/details/81708895)
+[tolimit-内存回收(整体流程)](https://www.cnblogs.com/tolimit/p/5435068.html)
