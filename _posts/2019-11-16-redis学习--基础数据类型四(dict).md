@@ -165,12 +165,13 @@ int dictRehash(dict *d, int n) {
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
     if (!dictIsRehashing(d)) return 0;/* 如果正在rehash则退出. */
 
-    while(n-- && d->ht[0].used != 0) {/* used表示该hash table中节点数量，不为0说明还有节点未转移. */
+    while(n-- && d->ht[0].used != 0) {/* used表示该hash table中key-value对节点数量，不为0说明还有节点未转移. */
         dictEntry *de, *nextde;
 
         /* Note that rehashidx can't overflow as we are sure there are more
          * elements because ht[0].used != 0 */
         assert(d->ht[0].size > (unsigned long)d->rehashidx);
+		/* 如果该bucket中没有key-value对，则什么都不做，继续下一个bucket; 相当于去掉了无效hash bucket. */
         while(d->ht[0].table[d->rehashidx] == NULL) {
             d->rehashidx++;
             if (--empty_visits == 0) return 1;
@@ -183,6 +184,7 @@ int dictRehash(dict *d, int n) {
             nextde = de->next;
             /* Get the index in the new hash table */
             h = dictHashKey(d, de->key) & d->ht[1].sizemask;
+			/* 使用头插法将元素插入新hash table；降低时间复杂度 */
             de->next = d->ht[1].table[h];
             d->ht[1].table[h] = de;
             d->ht[0].used--;
@@ -208,7 +210,6 @@ int dictRehash(dict *d, int n) {
 ```
 
 
-
 ## 参考资料
 
 [redis dict源码解析](https://blog.csdn.net/breaksoftware/article/details/53485416)
@@ -216,3 +217,5 @@ int dictRehash(dict *d, int n) {
 [腾讯云 dict基本操作解析](https://cloud.tencent.com/developer/article/1383803)
 
 [dict字典的实现](https://www.cnblogs.com/hoohack/p/8241665.html)
+
+[dict数据结构图示](https://segmentfault.com/a/1190000019967687?utm_source=tag-newest)
