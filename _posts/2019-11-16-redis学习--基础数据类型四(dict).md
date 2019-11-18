@@ -40,7 +40,11 @@ tags:
 
 ### 本篇主要内容
 
->分析dict字典类型底层数据结构，以及配套的重要操作函数
+>分析dict字典类型底层数据结构，以及配套的重要操作函数；其中最重要的当然是dict的扩容及缩容
+
+* 扩容：在链表过长影响查找效率时，扩大数组长度以减小链表长度
+
+* 缩容：在bucket过于稀疏(空桶数量过多)时，减小数组长度使得无效数组指针变少，达到节约空间的目的
 
 ## 代码分析
 
@@ -97,6 +101,8 @@ typedef struct dictIterator {
 ### 创建dict
 
 ``` c++
+/* 在redis中字典中的hash表也是采用延迟初始化策略:
+ * 在创建字典的时候并没有为hash table分配内存，只有当第一次插入数据时，才真正分配内存 */
 dict *dictCreate(dictType *type,
         void *privDataPtr)
 {
@@ -158,9 +164,12 @@ void dictRelease(dict *d)
 }
 ```
 
-### dictResh
+### dictRehash
 
 ``` c++
+/* 入参：dict 指针和步进长度n
+ * 步进长度：每次dictRehash最多rehash的真实节点；对于空的bucket则最多为步进长度10倍
+ */
 int dictRehash(dict *d, int n) {
     int empty_visits = n*10; /* Max number of empty buckets to visit. */
     if (!dictIsRehashing(d)) return 0;/* 如果正在rehash则退出. */
@@ -209,6 +218,190 @@ int dictRehash(dict *d, int n) {
 }
 ```
 
+### dict扩容
+
+>在链表过长影响查找效率时，扩大数组长度以减小链表长度，达到性能优化
+
+``` c++
+/* 两种情况需要调用dicExpand扩容数组：
+ * 1. hash table中bucket数量为0,
+ * 2. 平均每个bucket中元素数量，如果>5，则要扩容dict
+ */
+static int _dictExpandIfNeeded(dict *d)
+{
+    /* Incremental rehashing already in progress. Return. */
+    if (dictIsRehashing(d)) return DICT_OK;
+
+    /* 如果哈希表ht[0]的大小为0，则初始化字典. */
+    if (d->ht[0].size == 0) return dictExpand(d, DICT_HT_INITIAL_SIZE);
+
+    /* used: hash table中真实元素的数量
+	 * size：hash table中bucket数量
+	 * used/size: 平均每个bucket中元素数量，如果>5，则要扩容dict
+	 * dict_can_resize说明见附录
+	 */
+    if (d->ht[0].used >= d->ht[0].size &&
+        (dict_can_resize ||
+         d->ht[0].used/d->ht[0].size > dict_force_resize_ratio))
+    {
+        return dictExpand(d, d->ht[0].used*2);
+    }
+    return DICT_OK;
+}
+
+/* Expand or create the hash table */
+int dictExpand(dict *d, unsigned long size)
+{
+    /* 此size是希望dict扩张到多少个 */
+    if (dictIsRehashing(d) || d->ht[0].used > size)
+        return DICT_ERR;
+
+    dictht n; /* 新建hash table */
+	/* _dictNextPower是获取最近接size的，但是比size大的2的N次幂 */
+    unsigned long realsize = _dictNextPower(size);
+
+    /* Rehashing to the same table size is not useful. */
+    if (realsize == d->ht[0].size) return DICT_ERR;
+
+    /* 初始化new hash table相关数据 */
+    n.size = realsize;
+    n.sizemask = realsize-1;
+    n.table = zcalloc(realsize*sizeof(dictEntry*));
+    n.used = 0;
+
+    /* Is this the first initialization? If so it's not really a rehashing
+     * we just set the first hash table so that it can accept keys. */
+    if (d->ht[0].table == NULL) {
+        d->ht[0] = n;
+        return DICT_OK;
+    }
+
+    /* Prepare a second hash table for incremental rehashing */
+    d->ht[1] = n;
+    d->rehashidx = 0;/* 置rehash标志位，即扩展空间后，必定会进行rehash */
+    return DICT_OK;
+}
+```
+
+### 缩容 
+
+>在bucket过于稀疏(空桶数量过多)时，减小数组长度使得无效数组指针变少，达到节约空间的目的
+
+``` c++
+/* 当hash table保存的key-value数量与bucket大小比例<10%是缩容，最小容量为4 */
+int htNeedsResize(dict *dict) {
+    long long size, used;
+
+    size = dictSlots(dict);
+    used = dictSize(dict);
+    return (size > DICT_HT_INITIAL_SIZE &&
+            (used*100/size < HASHTABLE_MIN_FILL));
+}
+
+/* 将hash table中bucket数量调整至element元素数量，即used/size=1 */
+int dictResize(dict *d)
+{
+    int minimal;
+
+    if (!dict_can_resize || dictIsRehashing(d)) return DICT_ERR;
+    minimal = d->ht[0].used;
+    if (minimal < DICT_HT_INITIAL_SIZE)
+        minimal = DICT_HT_INITIAL_SIZE;
+    return dictExpand(d, minimal);
+}
+```
+
+### dictAddRaw
+
+``` c++
+/* 基础操作函数，如果发现正在进行rehash，则会执行步进为1的rehash
+ * 使用头插法将元素插入新hash
+ */
+dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
+{
+    long index;
+    dictEntry *entry;
+    dictht *ht;
+	/* 类似在dictFind,dictGenericDelete,dictGetRandomKey,dictGetSomeKeys等函数都有判断是否在rehash
+     * 如果在rehash且没有安全迭代器(d->iterators == 0)绑定到hash table时，则会执行步进为1的rehash操作. */
+    if (dictIsRehashing(d)) _dictRehashStep(d);
+
+    /* 确定新元素要插入到哪个hash bucket，dictHashKey：对新key使用hashfunction，计算hash key */
+    if ((index = _dictKeyIndex(d, key, dictHashKey(d,key), existing)) == -1)
+        return NULL;
+
+    /* 如果正在rehash，则要将新元素添加到ht[1]中 */
+    ht = dictIsRehashing(d) ? &d->ht[1] : &d->ht[0];
+    entry = zmalloc(sizeof(*entry));/* 申请一个hashentry内存空间 */
+	/* 使用头插法将元素插入新hash */
+    entry->next = ht->table[index];
+    ht->table[index] = entry;
+    ht->used++;
+
+    /* Set the hash entry fields. */
+    dictSetKey(d, entry, key);
+    return entry;
+}
+
+static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **existing)
+{
+    unsigned long idx, table;
+    dictEntry *he;
+    if (existing) *existing = NULL;
+
+    /* Expand the hash table if needed */
+    if (_dictExpandIfNeeded(d) == DICT_ERR)
+        return -1;
+	/* 在两个hash table中搜索是否有同样key的元素存在 */
+    for (table = 0; table <= 1; table++) {
+		/* 确定该key应该对应在哪个bucket中 */
+        idx = hash & d->ht[table].sizemask;
+        /* 在该bucket中搜索是否存在相同的Key */
+        he = d->ht[table].table[idx];
+        while(he) {
+            if (key==he->key || dictCompareKeys(d, key, he->key)) {
+                if (existing) *existing = he;
+                return -1;/* 如果已经存在，则返回-1，不需要新增 */
+            }
+            he = he->next;
+        }
+        if (!dictIsRehashing(d)) break;
+    }
+    return idx;
+}
+```
+
+>其它删改查的函数基本类似，没有什么特殊的，就不再一个一个分析了
+
+### 
+
+``` c++
+```
+
+## 附录
+
+>在updateDictResizePolicy函数中会更新dict_can_resize全局变量
+
+* 在没有子进程执行aof文件重写或生成RDB文件，则允许rehash
+
+* redis中每次开始执行aof文件重写或者开始生成新的RDB文件或者执行aof重写/生成RDB的子进程结束时，都会调用updateDictResizePolicy函数
+
+``` c++
+void updateDictResizePolicy(void) {
+    if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
+        dictEnableResize();
+    else
+        dictDisableResize();
+}
+  
+void dictEnableResize(void) {
+    dict_can_resize = 1;
+}
+  
+void dictDisableResize(void) {
+    dict_can_resize = 0;
+}
+```
 
 ## 参考资料
 
@@ -219,3 +412,5 @@ int dictRehash(dict *d, int n) {
 [dict字典的实现](https://www.cnblogs.com/hoohack/p/8241665.html)
 
 [dict数据结构图示](https://segmentfault.com/a/1190000019967687?utm_source=tag-newest)
+
+[渐进式rehash机制](https://www.cnblogs.com/williamjie/p/11205593.html)
