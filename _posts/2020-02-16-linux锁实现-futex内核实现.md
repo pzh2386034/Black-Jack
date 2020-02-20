@@ -1,10 +1,10 @@
 ---
-title: linux锁实现 
+title: linux锁实现之内核futex 
 date: 2020-02-15
 categories:
-- mutex
+- pthread
 tags:
-- mutex,rw_mutex,con_mutex
+- futex,futex_wait,futex_wake
 ---
 
 ## 前沿
@@ -13,16 +13,25 @@ tags:
 
 ### 上篇主要内容
 
+* 分析了mutex, semaphore glibc层面实现机制
+
+* mutex有多种不同的类型，可以通过 `pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_NORMAL)` 设置不同类型的锁
+
+* mutex, semaphore内核实现不相同
+
+	1. mutex内核由futex系统调用支撑，如果没有竞争不需要陷入内核；内核的主要是 `futex_wait/wake` 函数配合上层完成业务逻辑；
+	
+	2. semaphore内核由mach msg来支撑业务逻辑
+
 ### 本篇主要内容
 
+1. 分析futex_wait/wake内核实现大致逻辑
 
 ## 代码分析
-
 
 ### futex_init
 
 ``` c++
-
 static unsigned long __read_mostly futex_hashsize;
 
 static struct futex_hash_bucket *futex_queues;
@@ -112,6 +121,7 @@ SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
 ### do_futex
 
 ```c++
+/* 根据不同op类型，执行不同的分支，实现业务逻辑 */
 long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 		u32 __user *uaddr2, u32 val2, u32 val3)
 {
@@ -170,9 +180,76 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 }
 ```
 
+### futex_wake
+
+``` c++
+/*
+ * Wake up waiters matching bitset queued on this futex (uaddr).
+ * 1. 找到uaddr对应的futex_hash_bucket
+ * 2. 对hb加自旋锁
+ * 3. 遍历hash bucket的链表，找到uaddr对应的节点
+ * 4. 调用wake_futex唤起等待进程
+ * 5. 释放自旋锁
+ */
+static int
+futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
+{
+	struct futex_hash_bucket *hb;
+	struct futex_q *this, *next;
+	union futex_key key = FUTEX_KEY_INIT;
+	int ret;
+
+	if (!bitset)
+		return -EINVAL;
+	/* 计算futex对应的hash key */
+	ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &key, VERIFY_READ);
+	if (unlikely(ret != 0))
+		goto out;
+	/* 获取futex对应的 hash bucket */
+	hb = hash_futex(&key);
+
+	/* 确定在此hash bucket上，有线程在等待唤醒 */
+	if (!hb_waiters_pending(hb))
+		goto out_put_key;
+	/* 下面要操作hash bucket上的chain，加自旋锁保护 */
+	spin_lock(&hb->lock);
+	/* 遍历该hb的链表，注意链表中存储的节点是plist_node类型
+	 * 而this却是futex_q类型，这种类型转换是通过c中的container_of机制实现的 
+	 */
+	plist_for_each_entry_safe(this, next, &hb->chain, list) {
+		if (match_futex (&this->key, &key)) {/* 校验key是否一致 */
+			if (this->pi_state || this->rt_waiter) {
+				ret = -EINVAL;
+				break;
+			}
+
+			/* Check if one of the bits is set in both bitsets */
+			if (!(this->bitset & bitset))
+				continue;
+			/* 唤醒对应进程 */
+			wake_futex(this);
+			if (++ret >= nr_wake)
+				break;
+		}
+	}
+	/* 释放自旋锁 */
+	spin_unlock(&hb->lock);
+out_put_key:
+	put_futex_key(&key);
+out:
+	return ret;
+}
+```
+
 ### futex_wait
 
 ```c++
+/*
+ * 1. 加futex_hash_bucket中自旋锁
+ * 2. futex_wait_setup:初始化futex_q
+ * 3. futex_wait_queue_me:futex_q加入到对应的hash bucket中，建立 futex和等待进程的关系，释放自旋锁;启动hrtimer定时器，挂起进程重新调度
+ * 4. restart_block *restart什么用？赋值回来有什么意义？
+ */
 static int futex_wait(u32 __user *uaddr, unsigned int flags, u32 val,
 		      ktime_t *abs_time, u32 bitset)
 {
@@ -185,14 +262,17 @@ static int futex_wait(u32 __user *uaddr, unsigned int flags, u32 val,
 	if (!bitset)
 		return -EINVAL;
 	q.bitset = bitset;
-
+	/* 设置hrtimer定时任务：在一定时间(abs_time)后，
+	 * 如果进程还没被唤醒通过hrtimer_sleeper.function=hrtimer_waker唤醒wait进程
+	 */
 	if (abs_time) {
 		to = &timeout;
-
+		/* 在栈中新建一个高精度hrtimer */
 		hrtimer_init_on_stack(&to->timer, (flags & FLAGS_CLOCKRT) ?
 				      CLOCK_REALTIME : CLOCK_MONOTONIC,
 				      HRTIMER_MODE_ABS);
 		hrtimer_init_sleeper(to, current);
+		/* 设置到期时间 */
 		hrtimer_set_expires_range_ns(&to->timer, *abs_time,
 					     current->timer_slack_ns);
 	}
@@ -201,34 +281,39 @@ retry:
 	/*
 	 * Prepare to wait on uaddr. On success, holds hb lock and increments
 	 * q.key refs.
+	 * 初始化futex_q,链接到对应的hash bucket
+	 * copy uaddr到内核态
 	 */
 	ret = futex_wait_setup(uaddr, val, flags, &q, &hb);
 	if (ret)
 		goto out;
 
-	/* queue_me and wait for wakeup, timeout, or a signal. */
+	/*
+	 * 1. 将当前进程插入到等待队列中，等待队列中node带有进程优先级
+	 * 2. 启动hrtimer定时器
+	 * 3. 如果没有设置过期时间||设置了过期时间且还没过期的，schedule()重新进行进程调度，阻塞==》唤醒
+	 */
 	futex_wait_queue_me(hb, &q, to);
-
-	/* If we were woken (and unqueued), we succeeded, whatever. */
+	
+	/* If we were woken (and unqueued), we succeeded, whatever. 重新被唤醒，可能时时间到期、有人释放锁*/
 	ret = 0;
-	/* unqueue_me() drops q.key ref */
+	/* unqueue_me() drops q.key ref 从bucket中移除futex_q */
 	if (!unqueue_me(&q))
 		goto out;
 	ret = -ETIMEDOUT;
 	if (to && !to->task)
 		goto out;
 
-	/*
-	 * We expect signal_pending(current), but we might be the
-	 * victim of a spurious wakeup as well.
-	 */
+
 	if (!signal_pending(current))
 		goto retry;
 
 	ret = -ERESTARTSYS;
 	if (!abs_time)
 		goto out;
-
+	/* 到这说明是时间到期后，重新唤醒本线程
+	 * sleep到期后修改会当前进程的restart_block
+	 */
 	restart = &current->restart_block;
 	restart->fn = futex_wait_restart;
 	restart->futex.uaddr = uaddr;
@@ -242,6 +327,7 @@ retry:
 out:
 	if (to) {
 		hrtimer_cancel(&to->timer);
+		/* 销毁栈上的高精度hrtimer */
 		destroy_hrtimer_on_stack(&to->timer);
 	}
 	return ret;
@@ -315,3 +401,7 @@ union futex_key {
 	} both;
 };
 ```
+
+## 附录
+
+[futex内核实现](https://www.jianshu.com/p/570a61f08e27)
