@@ -18,6 +18,44 @@ linux内存管理主要分3个阶段：
 * 伙伴系统建立
 
 
+## start_kernel
+
+`start_kernel`中和内存管理相关的系统初始化函数主要如下：
+
+---->setup_arch: 体系机构的设置函数，还负责初始化自举分配器
+
+---->setup_per_cpu_areas: 定义per-cpu变量,为各个cpu分别创建一份这些变量副本
+
+---->build_all_zonelists: 建立节点(node)和内存域(zone)的数据结构
+
+---->mem_init: 停用bootmem分配器并迁移到实际的内存管理函数
+
+---->kmem_cache_init: 初始化内核内部用于小块内存区的分配器
+
+---->setup_per_cpu_pageset: 为各个cpu的zone的pageset数组的第一个数组元素分配内存
+
+## setup_arch
+
+setup_arch
+
+---->machine_specific_memory_setup: 创建一个列表，包括系统占据的内存区和空闲内存区
+
+---->parse_early_param: 解析dtb树命令行
+
+---->setup_memory: 确定每个节点可用的物理内存也数目，初始化bootmem分配器，分配各种内存区
+
+---->paging_init: 初始化内核页表并启动内存分页
+
+    ---->pagetable_init: 确保直接映射到内核地址空间的物理内存被初始化
+
+---->zone_size_init:初始化系统中所有节点的pgdat_t实例
+
+    ---->add_active_range: 对可用的物理内存建立一个相对简单的列表
+    
+    ---->free_area_init_nodes: 建立完备的内核数据结构
+
+## 本文主要内容
+
 >本篇主要介绍memblock建立过程及分页机制化，主要有如下几个步骤
 
 * setup_machine_fdt: 解析dtb，收集内存信息及bootargs
@@ -48,7 +86,7 @@ linux内存管理主要分3个阶段：
 	
 ## 关键函数分析
 
-#### setup_arch
+### setup_arch
 	
 ``` c++
 void __init setup_arch(char **cmdline_p)
@@ -166,7 +204,9 @@ early_init_dt_scan_memory：扫描fdt中memory区域，寻找device_type="memory
 }
 ```
 
-#### arm64_memblock_init
+### arm64_memblock_init
+
+>setup_arch->arm64_memblock_init
 
 ``` c++
 void __init arm64_memblock_init(void)
@@ -207,10 +247,9 @@ void __init arm64_memblock_init(void)
 }
 ```
 
-#### early_init_fdt_scan_reserved_mem
+### early_init_fdt_scan_reserved_mem
 
 ``` c++
-
 /**
  * early_init_fdt_scan_reserved_mem() - create reserved memory regions
  *
@@ -250,7 +289,7 @@ void __init early_init_fdt_scan_reserved_mem(void)
 ```
 
 
-<在看paging_init()函数前，我们先看下目前的内存状态
+>在看paging_init()函数前，我们先看下目前的内存状态
 
 ### 目前所有的内存分为了2部分
 
@@ -266,7 +305,7 @@ void __init early_init_fdt_scan_reserved_mem(void)
 
 在目前状态下，OS还无法正常使用它们，因为memblock中定义的都是物理地址；而目前仅有两段内存是已经mapping过(kernel image, fdt),其余段都还是黑暗状态，接下来就要给第一部分内存做mapping
 
-#### paging_init
+### paging_init
 
 
 ``` c++
@@ -434,6 +473,106 @@ void __init sparse_init(void)
 	memblock_free_early(__pa(usemap_map), size);
 }
 ```
+
+### build_all_zonelists
+
+>build_all_zonelists->build_all_zonelists_init->__build_all_zonelists
+
+```c++
+static int __build_all_zonelists(void *data)
+{
+	int nid;
+	int cpu;
+	pg_data_t *self = data;
+
+#ifdef CONFIG_NUMA
+	memset(node_load, 0, sizeof(node_load));
+#endif
+
+	if (self && !node_online(self->node_id)) {
+		build_zonelists(self);
+		build_zonelist_cache(self);
+	}
+
+	for_each_online_node(nid) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+
+		build_zonelists(pgdat);
+		build_zonelist_cache(pgdat);
+	}
+
+	/*
+	 * Initialize the boot_pagesets that are going to be used
+	 * for bootstrapping processors. The real pagesets for
+	 * each zone will be allocated later when the per cpu
+	 * allocator is available.
+	 *
+	 * boot_pagesets are used also for bootstrapping offline
+	 * cpus if the system is already booted because the pagesets
+	 * are needed to initialize allocators on a specific cpu too.
+	 * F.e. the percpu allocator needs the page allocator which
+	 * needs the percpu allocator in order to allocate its pagesets
+	 * (a chicken-egg dilemma).
+	 */
+	for_each_possible_cpu(cpu) {
+		setup_pageset(&per_cpu(boot_pageset, cpu), 0);
+
+#ifdef CONFIG_HAVE_MEMORYLESS_NODES
+		/*
+		 * We now know the "local memory node" for each node--
+		 * i.e., the node of the first zone in the generic zonelist.
+		 * Set up numa_mem percpu variable for on-line cpus.  During
+		 * boot, only the boot cpu should be on-line;  we'll init the
+		 * secondary cpus' numa_mem as they come on-line.  During
+		 * node/memory hotplug, we'll fixup all on-line cpus.
+		 */
+		if (cpu_online(cpu))
+			set_cpu_numa_mem(cpu, local_memory_node(cpu_to_node(cpu)));
+#endif
+	}
+
+	return 0;
+}
+```
+
+### 
+
+```c++
+static void build_zonelists(pg_data_t *pgdat)
+{
+	int node, local_node;
+	enum zone_type j;
+	struct zonelist *zonelist;
+
+	local_node = pgdat->node_id;
+
+	zonelist = &pgdat->node_zonelists[0];
+	j = build_zonelists_node(pgdat, zonelist, 0);
+
+	/*
+	 * Now we build the zonelist so that it contains the zones
+	 * of all the other nodes.
+	 * We don't want to pressure a particular node, so when
+	 * building the zones for node N, we make sure that the
+	 * zones coming right after the local ones are those from
+	 * node N+1 (modulo N)
+	 */
+	for (node = local_node + 1; node < MAX_NUMNODES; node++) {
+		if (!node_online(node))
+			continue;
+		j = build_zonelists_node(NODE_DATA(node), zonelist, j);
+	}
+	for (node = 0; node < local_node; node++) {
+		if (!node_online(node))
+			continue;
+		j = build_zonelists_node(NODE_DATA(node), zonelist, j);
+	}
+
+	zonelist->_zonerefs[j].zone = NULL;
+	zonelist->_zonerefs[j].zone_idx = 0;
+}
+```
+
 
 参考资料：
 

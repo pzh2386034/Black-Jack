@@ -477,6 +477,11 @@ typedef struct pglist_data {
 #endif
 #endif
 #ifndef CONFIG_NO_BOOTMEM
+    /*
+     *指向自举内存分配器数据结构的实例；自举内存分配器(boot memory allocator):
+     * 在系统启动期间，内存管理子系统初始化之前，内核也需要使用内存
+     * 以及用于初始化内存管理子系统的内存；
+     */
 	struct bootmem_data *bdata;
 #endif
 #ifdef CONFIG_MEMORY_HOTPLUG
@@ -484,7 +489,7 @@ typedef struct pglist_data {
 #endif
 	/* 节点第一个页面帧逻辑编号，所有页帧是依次编号的，每个页帧的号码都是全局唯一的。在UMA中总是0 */
 	unsigned long node_start_pfn;
-	unsigned long node_present_pages; /* total number of physical pages */
+	unsigned long node_present_pages; /* 本节点占页帧数目 */
 	/* node_spanned_pages=node_end_pfn-node_start_pfn */
 	unsigned long node_spanned_pages; /* total size of physical page
 					     range, including holes */
