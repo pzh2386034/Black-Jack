@@ -1,0 +1,141 @@
+cache:
+	1. L1 cache分为独立的icache,dcache, 为CPU单独所有；L2 cache为一个cluster内所有CPU共享；L3 cache通过总线与主存相连
+	分类：
+		1. 直接映射缓存：设计简单，但是存在cache颠簸现象
+			由于index(行数)一致，不同地址加载到缓存是同一行，导致需要反复cache miss
+		2. 组相连缓存：index成为set index(组索引)；先根据index找到set，然后将组内的所有cache line对应的tag取出来和地址中的tag对比
+			相当于是一个链式hash表结构，可以有效降低cache颠簸频率
+		3. 全相连缓存：没有index，直接对比tag，任意地址的数据均可以缓存在cache line中
+	更新策略：
+		1. 写直通：cache和主存的数据始终保持一致；当CPU执行stroe指令并在cache命中时，更新cache中数据并更新主存中数据；
+		2. 写回：cache和主存数据可能不一致；cache line有一个dirty bit，主存中数据只会在cache line被替换或显示的clean操作是更新；
+	组织方式：
+		1. VIVT：虚拟高速缓存
+			歧义：不同数据在cache line中有相同的tag，index；在相同的虚拟地址映射不同物理地址是会出现，而在不同进程间这个现象是普遍的；因此在进程切换时必须要flush cache
+			别名：不同的cache line对应同一个数据；在多个虚拟地址映射同一个物理地址会出现，如果配合写回策略，会导致多个cache line中数据不一致；保证每次分配的虚拟地址都索引到相同的cache line可以解决
+		2. PIPT：物理高速缓存
+			歧义：不存在
+			别名：不存在
+			缺点：先要经过MMU转换为物理地址，再到cache确认是否命中；硬件成本高，性能劣势
+		3. VIPT：物理tag，虚拟index
+			歧义：由于tag为物理地址，不存在歧义问题(物理地址只精确到page)
+			别名：由于虚拟、物理地址低12位是一样的；如果满足一路的cache size<=4K,则不存在别名问题；否则内核在建立共享映射的时候，返回的虚拟地址按cache大小对齐，也能解决别名问题
+		
+cache和DMA一致性
+	DMA可以在没有CPU参与的条件下，在I/O和主存之间搬运数据；如果DMA和cache没有任何关系的情况，两者数据可能出现不一致；因此DMA通过总线获取数据时，应该先检查cache是否命中
+	总线监视技术：cache控制器会监视总线上每一条内存访问，检查是否命中
+	nocache技术：在内存中申请一段当做buffer，用于DMA读取I/O设备的缓存，或写入I/O设备的数据，将这段内存映射为nocache即可；参考dma_alloc_coherent()
+	软件维护cache一致性：将DMA读写I/O设备的操作分开处理，利用MESI协议；要注意在DMA传输没有完成前CPU不能访问DMA buffer，且DMA buffer首地址必须cacheline对齐，且buffer大小也必须cacheline对齐
+		DMA从I/O读数据：在传输前，invalid DMA buffer地址范围的高速缓存；
+		DMA写数据到I/O外设：在传输前，clean DMA buffer地址范围的高速缓存；
+		陷阱：由于在不支持总线监视技术的情况下，必须要保证DMA buffer和cacheline对齐；因此DMA Buffer不能从栈和全局变量分配，一般使用kmalloc。x86_64会保证DMA一致性，而在arm64,需要特别注意
+
+icache与dcache一致性
+	出于性能考虑，为了在cpu执行程序时，可以同时获取指令、数据，做到硬件上的并行，衍生出i,dcache；
+	硬件维护一致性：让icache、dcache之间通信，每次修改dcache，硬件负责查找icache是否命中，命中则更新icache；当加载指令时，先查找icache，再查找dcache
+	软件维护一致性：当icache在dcache中被修改后，clean dcache中对应的cache line；再invalid icache中对应的cache line；通过所在页是否具有可执行权限得知是否为代码段；
+	
+多核cache一致性
+	MESI协议，ARM64架构采用MOESI协议
+	atomic实现原理：1. Bus lock 2. cacheline lock
+		cacheline lock：发出read invalidate，将其它CPU原子变量所在缓存无效；将cacheline置位exclusive，并locked；修改后写回cacheline；unlocked
+		
+
+
+tail cpu, tail index,    pending,    locked
+IT11SRCA06
+
+
+讲讲贪心算法
+并发量很大，服务器宕机。你会怎么做？
+如果线上用户出现502错误你怎么排查？
+说一下你平时的学习方法？
+
+syn和lock的区别，哪个更好？
+怎选择 三次握手，第三次失败了，失败怎么办？为什么四次挥手？
+缓存穿透，怎解决？
+负载均衡算法的实现
+轮询和随机的缺点？
+
+
+算法：最大回文串
+
+
+进程调度、虚拟内存、进程与线程的区别、如何判断进程是否发生了内存泄漏
+	如何判断进程是否发生了内存泄漏： valgrind，asan检测进程；使用ps监控进程，观察VSZ,RSS列
+	进程调度：进程调度的最小单位是线程
+	虚拟内存：虚拟内存的最小单位是进程
+
+
+常见的设计模式
+tcp与udp区别、tcp三次握手和四次挥手、流量控制、拥塞控制（四个算法，问得很细）
+	tcp：面向连接、基于字节流协议，保证数据完成可靠为协议设计出发点
+	udp：无连接、基于数据报协议，可能丢包
+	三次握手：syn,syn/ack,ack 完成建立连接
+	四次挥手：FIN,ACK,FIN/ACK,ACK 最后发起方有个timewait状态 2MSL==>可靠安全的关闭tcp连接
+	
+	epoll使用了内核文件级别的回调机制，如果某个sock触发，查找效率为O(1)；select，poll则监听文件描述符list，查找的效率为O(n)
+		LT：socket接收缓冲区不为空，有数据可读，读事件一直触发；socket发送缓冲区不满，可以继续写入数据，写事件一直触发
+		socket上有数据到时，内核吧网卡上的数据copy到内核中，使用网卡中断回调函数将socket插入到 rdllink 链表中
+		epoll使用红黑树监听并维护所有文件描述符；当epoll_wait调用，观察 rdllink 中是否有数据即可；如果有事件则copy对应的句柄到用户态
+			1. 减少了用户态、内核态的文件句柄拷贝；
+			2. 减少了可读可写文件句柄遍历；
+			3. 通过mmap加速内核、用户态之间信息传递，减少内核拷贝
+			4. IO性能不会随着监听的文件描述文件数量增长而下降
+			
+			      epoll_wait 的工作流程：
+					1. epoll_wait调用ep_poll，当rdlist为空（无就绪fd）时挂起当前进程，直到rdlist不空时进程才被唤醒。
+					2. 文件fd状态改变（buffer由不可读变为可读或由不可写变为可写），导致相应fd上的回调函数ep_poll_callback()被调用。
+					3. ep_poll_callback将相应fd对应epitem加入rdlist，导致rdlist不空，进程被唤醒，epoll_wait得以继续执行。
+					4. ep_events_transfer函数将rdlist中的epitem拷贝到txlist中，并将rdlist清空。
+					5. ep_send_events，它扫描txlist中的每个epitem，调用其关联fd对用的poll方法。此时对poll的调用仅仅是取得fd上较新的events（防止之前events被更新），之后将取得的events和相应的fd发送到用户空间（封装在struct epoll_event，从epoll_wait返回）
+			https://www.cnblogs.com/lojunren/p/3856290.html
+			https://zhuanlan.zhihu.com/p/93609693
+	
+	丢包处理：超时重传，滑动窗口，流量、拥塞控制，延时、捎带应答
+	滑动窗口：初始窗口大小有接收端决定，在握手第二个syn/ack报文中的win字段确认
+
+tcmalloc：page, span, pageheap
+	page: tcmalloc中每个page默认8k；然后将page划分分size class，类似kmalloc
+	threadcache：每个线程一个threadcache，因此各个线程从中获取内存时不需要加锁的,threadcache->freelist中保存的本线程所有的size class 链表
+	centralcache：所有线程共用的缓存，对于每个size class 也都有一个单独的链表来缓存空闲对象，centralcache->centralfreelist
+	pageheap：当centralcache中空闲对象不够用时，centralcache会向pageheap申请一块内存，将其拆分成一系列空闲对象，添加到对应的centralfreelist中；pageheap->span的结构也类似于伙伴系统freelist分级链表结构,从中申请page的过程也类似于从伙伴系统申请内存的步骤
+	
+	总结一下，小对象分配流程大致如下：
+		将要分配的内存大小映射到对应的size class。
+		查看ThreadCache中该size class对应的FreeList。
+		如果FreeList非空，则移除FreeList的第一个空闲对象并将其返回，分配结束。
+		如果FreeList是空的：
+			从CentralCache中size class对应的CentralFreeList获取一堆空闲对象。
+			如果CentralFreeList也是空的，则：
+				向PageHeap申请一个span。
+				拆分成size class对应大小的空闲对象，放入CentralFreeList中。
+			将这堆对象放置到ThreadCache中size class对应的FreeList中（第一个对象除外）。
+		返回从CentralCache获取的第一个对象，分配结束。
+			
+
+
+redis底层数据结构有哪些、持久化方式
+B+树索引和hash索引的区别
+Linux如何查看IO读写很高
+Linux中异步IO是如何实现的，消息队列如何实现的？
+Redis持久化，“并发高，数据量小”和“并发低，数据量大”，redis怎么选择存储模式
+Nginx生命周期
+
+
+B 树和 b+ 树的区别 b+ 树的优点
+Linux cpu 满了怎么排查？
+怎么查看占 cpu 最多的线程？
+Linux怎么搜索文件中的字符串，写到另一个文件中
+liunx 网络相关命令
+如何判断链表是否有环
+
+进程间如何区分虚拟地址：每个进程都有自身的页目录PGD，目录指针存放在mm_struct->pgd中；当进程被schedule(),内核使用该指针设置CR3(switch_mm());CR3存的是物理地址
+
+fork新进程，内核页目录处理方法：从内核的页目录swapper_pg_dir中复制内核区间页面目录至新建进程PGD的相应位置do_fork->copy_mm->mm_init->pgd_alloc->set_pgd_fast->get_pgd_slow->memcpy
+
+linux内核中系统调用的入口函数SYSCALL_DEFINE3(open,....)：数字表示参数个数
+
+
+
+	
