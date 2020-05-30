@@ -1,0 +1,915 @@
+---
+title: ARM64内核系统调用read
+date: 2020-05-03
+categories:
+- linux-syscall
+tags:
+- read
+---
+
+## 前沿
+
+>最近再次看了遍内存管理模块，感觉缓冲区这块内容还没完全看明白，这里主要涉及文件读写的流程中内存管理是如何发挥作用，这就需要分析read,write函数实现流程了
+
+### 本篇主要内容
+
+#### 内核分层
+
+* VFS layer：虚拟文件系统层，屏蔽下层具体文件系统操作的差异，为上层的操作提供一个统一的接口；通过这一层可以把设备抽象成文件，使得操作设备类似操作文件
+
+* ext2/3/NFS/NTFS：具体文件系统层，通过指针注册到VFS中
+
+* page cache：内存缓存层，缓存磁盘上的部分数据，提高内核对磁盘的访问性能
+
+* generic block layer：通用块层，接收上层发出的磁盘请求，最终发出IO请求；隐藏底层硬件块设备的特性，为块设备提供了一个通用的抽象视图
+
+* I/O scheduler layer：IO调度层，接收IO请求，缓存请求并视图合并相邻的请求；根据设置好的调度算法，回调驱动层提供的请求处理函数，处理IO请求
+
+* block device driver layer：块设备驱动层，从上层取出IO请求，根据IO请求中制定的信息，通过向具体块设备的设备控制器发送命令的方式，操纵设备传输数据
+
+* block device layer：物理块设备层
+
+#### 软链接
+
+>软链接具有自己的inode，即有自己的文件名，只是文件中存放的内容是另一个文件的路径名；因此有自己的inode号及用户数据块
+
+* 有自己的文件属性及权限等
+
+* 可以对不存在的文件或目录创建，可以交叉文件系统，可以对文件、目录创建
+
+* 创建软链接时，inode->i_nlink不会递增
+
+* 删除软链接不会影响被指向的文件
+
+#### 硬链接
+
+>本质是同一个文件具有对个别名，具有相同inode而dentry不同
+
+* 两者有相同的inode、data block
+
+* 只能对已存在的文件进行创建
+
+* 不能对目录进行创建，只能对文件创建硬链接
+
+* 删除一个硬链接不影响其他具有相同inode号的文件，inode->i_nlink递减
+
+
+#### VFS四大对象
+
+* 超级块(super block)：代表一个文件系统，是控制块，有整个文件系统信息；一个文件系统所有的inode都要链接到超级块上
+
+* 索引节点(inode)：linux管理文件系统的最基本单元，每个目录和文件只能由唯一的inode描述
+
+* 目录项(dentry)：
+
+* 文件对象(file)：
+
+## 源码分析
+
+### open
+
+``` c++
+SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+{	
+	/* 对于64位系统会添加O_LARGEFILE选项，以便能打开大文件 */
+	if (force_o_largefile())
+		flags |= O_LARGEFILE;
+	/* 第一个参数为AT_FDCWD，表示文件名是以当前路径作为起始目录的路径 */
+	return do_sys_open(AT_FDCWD, filename, flags, mode);
+}
+
+long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
+{
+	struct open_flags op;
+	/* 根据入参构建文件打开标志，将用户态flags和mode转换Wie内核态标志 */
+	int fd = build_open_flags(flags, mode, &op);
+	struct filename *tmp;
+
+	if (fd)
+		return fd;
+	/* 目前filename还是用户态的内存缓冲区，拷贝至内核态
+	 * 通过__getname()-->kmalloc()获取一页内存存放文件名
+	 * 初始化 struct filename，并放置在内存页的开始部分；剩余空间放文件名
+	 * 如果剩余空间不够存放文件名，则另分配一小块内存(kmalloc)单独存放struct filename；
+	 * 将整页内存存放文件名
+	*/
+	tmp = getname(filename);
+	if (IS_ERR(tmp))
+		return PTR_ERR(tmp);
+	/* 获取一个未使用的文件描述符 */
+	fd = get_unused_fd_flags(flags);
+	if (fd >= 0) {
+		/* 创建file结构体 */
+		struct file *f = do_filp_open(dfd, tmp, &op);
+		if (IS_ERR(f)) {
+			/* 打开失败，收回文件描述符 */
+			put_unused_fd(fd);
+			fd = PTR_ERR(f);
+		} else {
+			/* 产生notify事件，用于文件监控 */
+			fsnotify_open(f);
+			/* 将file结构体放入以fd为索引下标的数组中，让file和fd相关联 */
+			fd_install(fd, f);
+		}
+	}
+	putname(tmp);/* 释放内核分配的路径缓冲区 */
+	return fd;
+}
+```
+
+### do_filp_open
+
+``` c++
+/* 以3种不同的模式尝试打开指定文件，关键在flags不同 */
+struct file *do_filp_open(int dfd, struct filename *pathname,
+		const struct open_flags *op)
+{
+	struct nameidata nd; /* 路径搜索信息存放的结构体 */
+	int flags = op->lookup_flags;
+	struct file *filp;
+	/* 进行三种情况不同的打开尝试，首先在RCU模式(rcu-walk)下进行打开，并禁止抢占
+	 * ref-walk在进程需要随眠或者需要取得某结构的引用计数（reference count）的情况下切换进来
+	 */
+	filp = path_openat(dfd, pathname, &nd, op, flags | LOOKUP_RCU);
+	if (unlikely(filp == ERR_PTR(-ECHILD)))
+		/* 失败后，尝试ref-walk模式打开 */
+		filp = path_openat(dfd, pathname, &nd, op, flags);
+	if (unlikely(filp == ERR_PTR(-ESTALE)))
+		/* 最后一种情况一般只在nfs文件系统才有可能会被使用 */
+		filp = path_openat(dfd, pathname, &nd, op, flags | LOOKUP_REVAL);
+	return filp;
+}
+```
+
+### path_openat
+
+``` c++
+/* 
+ * 首先为struct file申请内存空间，设置遍历路径的初始状态
+ * 然后遍历路径找到最后目标父节点
+ * 最后在do_last中根据目标类型及flags完成open
+ * 返回一个新的file结构体
+ */
+static struct file *path_openat(int dfd, struct filename *pathname,
+		struct nameidata *nd, const struct open_flags *op, int flags)
+{
+	struct file *file;
+	struct path path;
+	int opened = 0;
+	int error;
+	/* 从缓存中获取一个file结构体 */
+	file = get_empty_filp();
+	if (IS_ERR(file))
+		return file;
+
+	file->f_flags = op->open_flag;/* 获取open时的选项 */
+
+	if (unlikely(file->f_flags & __O_TMPFILE)) {
+		error = do_tmpfile(dfd, pathname, nd, flags, op, file, &opened);
+		goto out2;
+	}
+	/* 首先根据flags确定路径起始点，再通过 link_path_walk 函数搜索用户传入路径
+	 * nd保存了最后一个目录项信息，但内核并没有确定目录项是否存在，在do_last()中进行
+	 * 1. 根据不同情况确定起始路径，包括3种情况：根路径、相对路径、以指定路径为起始
+	 * 2. 通过walk_component()处理当前目录项，更新nd
+	 * 3. 如果目录项为符号链接文件，通过nested_symlink()处理，更新nd
+	*/
+	error = path_init(dfd, pathname, flags, nd);
+	if (unlikely(error))
+		goto out;
+	/* 填充filp所指向的file结构 */
+	error = do_last(nd, &path, file, op, &opened, pathname);
+	while (unlikely(error > 0)) { /* 处理文件为符号链接的情况 */
+		struct path link = path;
+		void *cookie;
+		if (!(nd->flags & LOOKUP_FOLLOW)) {
+			path_put_conditional(&path, nd);
+			path_put(&nd->path);
+			error = -ELOOP;
+			break;
+		}
+		/* 如果设置了LOOKUP_FOLLOW标志，则通过follow_link()进入符号链接文件，填充file
+		 * 否则直接返回当前符号链接文件
+		 */
+		error = may_follow_link(&link, nd);
+		if (unlikely(error))
+			break;
+		nd->flags |= LOOKUP_PARENT;
+		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
+		error = follow_link(&link, nd, &cookie);
+		if (unlikely(error))
+			break;
+		/* 使用符号链接指向文件填充file */
+		error = do_last(nd, &path, file, op, &opened, pathname);
+		put_link(nd, &link, cookie);
+	}
+out:
+	path_cleanup(nd);
+out2:
+	if (!(opened & FILE_OPENED)) {
+		BUG_ON(!error);
+		put_filp(file);
+	}
+	if (unlikely(error)) {
+		if (error == -EOPENSTALE) {
+			if (flags & LOOKUP_RCU)
+				error = -ECHILD;
+			else
+				error = -ESTALE;
+		}
+		file = ERR_PTR(error);
+	}
+	return file;
+}
+```
+
+### do_last
+
+``` c++
+/*
+ * Handle the last step of open()
+ * 对目标做最后处理，成功返回0，填充file结构体
+ */
+static int do_last(struct nameidata *nd, struct path *path,
+		   struct file *file, const struct open_flags *op,
+		   int *opened, struct filename *name)
+{
+	/* 获取通过 link_path_walk 得到的路径最后一个分量的父目录目录项 */
+	struct dentry *dir = nd->path.dentry;
+	int open_flag = op->open_flag;
+	bool will_truncate = (open_flag & O_TRUNC) != 0;
+	bool got_write = false;
+	int acc_mode = op->acc_mode;
+	struct inode *inode;
+	bool symlink_ok = false;
+	struct path save_parent = { .dentry = NULL, .mnt = NULL };
+	bool retried = false;
+	int error;
+
+	nd->flags &= ~LOOKUP_PARENT;
+	nd->flags |= op->intent;
+
+	if (nd->last_type != LAST_NORM) {
+		error = handle_dots(nd, nd->last_type);
+		if (error)
+			return error;
+		goto finish_open;
+	}
+
+	if (!(open_flag & O_CREAT)) {
+		if (nd->last.name[nd->last.len])
+			nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+		if (open_flag & O_PATH && !(nd->flags & LOOKUP_FOLLOW))
+			symlink_ok = true;
+		/*  */
+		error = lookup_fast(nd, path, &inode);
+		if (likely(!error))
+			goto finish_lookup;
+
+		if (error < 0)
+			goto out;
+
+
+		BUG_ON(nd->inode != dir->d_inode);
+	} else {
+		/* create side of things */
+		/*
+		 * This will *only* deal with leaving RCU mode - LOOKUP_JUMPED
+		 * has been cleared when we got to the last component we are
+		 * about to look up
+		 */
+		error = complete_walk(nd);
+		if (error)
+			return error;
+
+		audit_inode(name, dir, LOOKUP_PARENT);
+		error = -EISDIR;
+		/* trailing slashes? */
+		if (nd->last.name[nd->last.len])
+			goto out;
+	}
+
+retry_lookup:
+	if (op->open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
+		error = mnt_want_write(nd->path.mnt);
+		if (!error)
+			got_write = true;
+		/*
+		 * do _not_ fail yet - we might not need that or fail with
+		 * a different error; let lookup_open() decide; we'll be
+		 * dropping this one anyway.
+		 */
+	}
+	mutex_lock(&dir->d_inode->i_mutex);
+	/*  */
+	error = lookup_open(nd, path, file, op, got_write, opened);
+	mutex_unlock(&dir->d_inode->i_mutex);
+
+	if (error <= 0) {
+		if (error)
+			goto out;
+
+		if ((*opened & FILE_CREATED) ||
+		    !S_ISREG(file_inode(file)->i_mode))
+			will_truncate = false;
+
+		audit_inode(name, file->f_path.dentry, 0);
+		goto opened;
+	}
+
+	if (*opened & FILE_CREATED) {
+		/* Don't check for write permission, don't truncate */
+		open_flag &= ~O_TRUNC;
+		will_truncate = false;
+		acc_mode = MAY_OPEN;
+		path_to_nameidata(path, nd);
+		goto finish_open_created;
+	}
+
+	/*
+	 * create/update audit record if it already exists.
+	 */
+	if (d_is_positive(path->dentry))
+		audit_inode(name, path->dentry, 0);
+
+	/*
+	 * If atomic_open() acquired write access it is dropped now due to
+	 * possible mount and symlink following (this might be optimized away if
+	 * necessary...)
+	 */
+	if (got_write) {
+		mnt_drop_write(nd->path.mnt);
+		got_write = false;
+	}
+
+	error = -EEXIST;
+	if ((open_flag & (O_EXCL | O_CREAT)) == (O_EXCL | O_CREAT))
+		goto exit_dput;
+
+	error = follow_managed(path, nd->flags);
+	if (error < 0)
+		goto exit_dput;
+
+	if (error)
+		nd->flags |= LOOKUP_JUMPED;
+
+	BUG_ON(nd->flags & LOOKUP_RCU);
+	inode = path->dentry->d_inode;
+	error = -ENOENT;
+	if (d_is_negative(path->dentry)) {
+		path_to_nameidata(path, nd);
+		goto out;
+	}
+finish_lookup:
+	/* we _can_ be in RCU mode here */
+	if (should_follow_link(path->dentry, !symlink_ok)) {
+		if (nd->flags & LOOKUP_RCU) {
+			if (unlikely(nd->path.mnt != path->mnt ||
+				     unlazy_walk(nd, path->dentry))) {
+				error = -ECHILD;
+				goto out;
+			}
+		}
+		BUG_ON(inode != path->dentry->d_inode);
+		return 1;
+	}
+
+	if ((nd->flags & LOOKUP_RCU) || nd->path.mnt != path->mnt) {
+		path_to_nameidata(path, nd);
+	} else {
+		save_parent.dentry = nd->path.dentry;
+		save_parent.mnt = mntget(path->mnt);
+		nd->path.dentry = path->dentry;
+
+	}
+	nd->inode = inode;
+	/* Why this, you ask?  _Now_ we might have grown LOOKUP_JUMPED... */
+finish_open:
+	error = complete_walk(nd);
+	if (error) {
+		path_put(&save_parent);
+		return error;
+	}
+	audit_inode(name, nd->path.dentry, 0);
+	error = -EISDIR;
+	if ((open_flag & O_CREAT) && d_is_dir(nd->path.dentry))
+		goto out;
+	error = -ENOTDIR;
+	if ((nd->flags & LOOKUP_DIRECTORY) && !d_can_lookup(nd->path.dentry))
+		goto out;
+	if (!d_is_reg(nd->path.dentry))
+		will_truncate = false;
+
+	if (will_truncate) {
+		error = mnt_want_write(nd->path.mnt);
+		if (error)
+			goto out;
+		got_write = true;
+	}
+finish_open_created:
+	error = may_open(&nd->path, acc_mode, open_flag);
+	if (error)
+		goto out;
+
+	BUG_ON(*opened & FILE_OPENED); /* once it's opened, it's opened */
+	error = vfs_open(&nd->path, file, current_cred());
+	if (!error) {
+		*opened |= FILE_OPENED;
+	} else {
+		if (error == -EOPENSTALE)
+			goto stale_open;
+		goto out;
+	}
+opened:
+	error = open_check_o_direct(file);
+	if (error)
+		goto exit_fput;
+	error = ima_file_check(file, op->acc_mode, *opened);
+	if (error)
+		goto exit_fput;
+
+	if (will_truncate) {
+		error = handle_truncate(file);
+		if (error)
+			goto exit_fput;
+	}
+out:
+	if (got_write)
+		mnt_drop_write(nd->path.mnt);
+	path_put(&save_parent);
+	terminate_walk(nd);
+	return error;
+
+exit_dput:
+	path_put_conditional(path, nd);
+	goto out;
+exit_fput:
+	fput(file);
+	goto out;
+
+stale_open:
+	/* If no saved parent or already retried then can't retry */
+	if (!save_parent.dentry || retried)
+		goto out;
+
+	BUG_ON(save_parent.dentry != dir);
+	path_put(&nd->path);
+	nd->path = save_parent;
+	nd->inode = dir->d_inode;
+	save_parent.mnt = NULL;
+	save_parent.dentry = NULL;
+	if (got_write) {
+		mnt_drop_write(nd->path.mnt);
+		got_write = false;
+	}
+	retried = true;
+	goto retry_lookup;
+}
+```
+
+### link_path_walk
+
+``` c++
+/* 分隔用户传入的路径名，并逐目录通过walk_component查找，是否目录真是存在
+ * 期间通过may_lookup()检验目录权限
+ * 如果某一级目录是符号链接，则通过nested_symlink()找到最终指向
+ */
+static int link_path_walk(const char *name, struct nameidata *nd)
+{
+	struct path next;
+	int err;
+	
+	while (*name=='/')
+		name++;
+	if (!*name)
+		return 0;
+
+	/* At this point we know we have a real path component. */
+	for(;;) {
+		u64 hash_len;
+		int type;
+		/* inode_permisssion: inode权限检查，首先基于ACL进行权限检查及能否访问文件所在设备. */
+		err = may_lookup(nd);
+ 		if (err)
+			break;
+		/* 计算第一个/前路径的hash值. */
+		hash_len = hash_name(name);
+
+		type = LAST_NORM;
+		/* hashlen_len函数计算本截目录的长度. */
+		if (name[0] == '.') switch (hashlen_len(hash_len)) {
+			case 2:
+				if (name[1] == '.') {
+					type = LAST_DOTDOT;
+					nd->flags |= LOOKUP_JUMPED;
+				}
+				break;/* 如果是两个圆点则跳出循环，返回父目录 */
+			case 1:
+				type = LAST_DOT;/* 如果是单个圆点则继续下个分量 */
+		}
+		if (likely(type == LAST_NORM)) {
+		/* 说明分两名既不是"." 也不是".."，因此需要在目录项高速缓存中查找 */
+			struct dentry *parent = nd->path.dentry;
+			nd->flags &= ~LOOKUP_JUMPED;
+			if (unlikely(parent->d_flags & DCACHE_OP_HASH)) {
+				struct qstr this = { { .hash_len = hash_len }, .name = name };
+				err = parent->d_op->d_hash(parent, &this);
+				if (err < 0)
+					break;
+				hash_len = this.hash_len;
+				name = this.name;
+			}
+		}
+		/* 将数据更新到. */
+		nd->last.hash_len = hash_len;
+		nd->last.name = name;
+		nd->last_type = type;
+		/* 将name的指针推到下一个"/". */
+		name += hashlen_len(hash_len);
+		if (!*name)
+			return 0;/* 到结尾了. */
+		/* 跳过接下来的所有"/" */
+		do {
+			name++;
+		} while (unlikely(*name == '/'));
+		if (!*name)
+			return 0;/* 到结尾了. */
+		/* "走过中间节点"，如果当前子路径是一个真正的目录，则nd更新，否则只更新next.
+		 * look_fast: 快速搜索目录，首先使用__d_lookup_rcu在内存散列表中查找dentry
+			找不到进入ref-walk模式
+		 * look_slow: 慢速搜索目录，当内存中不存在本目录时进入；
+			主要是调用下层具体文件系统提供 look_up()函数搜索，可能会启动设备驱动程序
+			follow_managed:
+				如果自动挂载工具autofs管理这个目录跳转，则调用 d_manage()回调函数处理
+				如果目录是挂载点，查找挂载点文件系统，跳转到这个文件系统的根目录
+				如果目录时自动挂载点，则调用follow_automount()自动挂载文件系统
+		   如果是符号链接，则通过 should_follow_link->pick_link 递归找到最终指向目录
+				如果符号链接嵌套层数>40,失败
+		 * 找到目录后，通过 path_to_nameidata()函数，检测是否为中长目录，是的话就更新nd->path数据
+		 */
+		err = walk_component(nd, &next, LOOKUP_FOLLOW);
+		if (err < 0)
+			return err;
+
+		if (err) {
+			/* 如果本中间节点是符号链接，通过本函数更新nd
+			 * 透过符号链接找到最终的目录，采用递归搜索，depmax<=40
+			*/
+			err = nested_symlink(&next, nd);
+			if (err)
+				return err;
+		}
+		if (!d_can_lookup(nd->path.dentry)) {
+			err = -ENOTDIR; 
+			break;
+		}
+	}
+	terminate_walk(nd);
+	return err;
+}
+```
+
+### 
+
+``` c++
+
+```
+
+### 
+
+``` c++
+
+```
+
+## 附录
+
+### filename
+
+``` c++
+struct filename {
+	const char		*name;	/* 指向内核空间的文件路径指针 */
+	const __user char	*uptr;	/* 用户空间的原始指针 */
+	struct audit_names	*aname; /* 来自 audit 上下文的文件名 */
+	int			refcnt;			/* 引用计数 */
+	const char		iname[];	/* 文件名，长度小于 PATH_MAX */
+};
+```
+
+### super_block
+
+``` c++
+struct super_block {
+	struct list_head	s_list;		/* 链接super_block的链表 */
+	dev_t			s_dev;	/* 包含具体文件系统的块设备标识符，例如/dev/hda1-->0x301 */
+	unsigned char		s_blocksize_bits;/* 上面的size大小占用位数 */
+	unsigned long		s_blocksize;/* 文件系统中数据块大小 */
+	loff_t			s_maxbytes;	/* 允许的最大的文件大小 */
+	struct file_system_type	*s_type;/* 文件系统类型(ext2,fat32,NTFS...) */
+	const struct super_operations	*s_op;/* 指向某个特定的具体文件系统的用于超级块操作的函数集合 */
+	const struct dquot_operations	*dq_op;/* 指向某个特定的具体文件系统用于限额操作的函数集合 */
+	const struct quotactl_ops	*s_qcop;/* 配置磁盘限额的方法，处理来自用户空间的请求 */
+	const struct export_operations *s_export_op;
+	unsigned long		s_flags;/* 安装标识 */
+	unsigned long		s_magic;/* 区别于其他文件系统的标识 */
+	struct dentry		*s_root;/* 指向文件系统安装目录的目录项dentry */
+	struct rw_semaphore	s_umount;/* 对超级块读写时进行同步 */
+	int			s_count;		/* 对超级块的使用计数 */
+	atomic_t		s_active;	/* 引用计数 */
+#ifdef CONFIG_SECURITY
+	void                    *s_security;
+#endif
+	const struct xattr_handler **s_xattr;
+
+	struct list_head	s_inodes;	/* 属于文件系统的所有inode链接节点 */
+	struct hlist_bl_head	s_anon;		/* anonymous dentries for (nfs) exporting */
+	struct list_head	s_mounts;	/* list of mounts; _not_ for fs use */
+	struct block_device	*s_bdev;	/* 指向文件系统被安装的块设备 */
+	struct backing_dev_info *s_bdi;
+	struct mtd_info		*s_mtd;
+	struct hlist_node	s_instances;/* 同一类型的文件系统通过这个节点将所有的super_block链接起来 */
+	unsigned int		s_quota_types;	/* Bitmask of supported quota types */
+	struct quota_info	s_dquot;	/* 磁盘限额相关选项 */
+
+	struct sb_writers	s_writers;
+
+	char s_id[32];				/* Informational name */
+	u8 s_uuid[16];				/* UUID */
+
+	void 			*s_fs_info;	/* Filesystem private info */
+	unsigned int		s_max_links;
+	fmode_t			s_mode;
+
+	/* Granularity of c/m/atime in ns.
+	   Cannot be worse than a second */
+	u32		   s_time_gran;
+
+	/*
+	 * The next field is for VFS *only*. No filesystems have any business
+	 * even looking at it. You had been warned.
+	 */
+	struct mutex s_vfs_rename_mutex;	/* Kludge */
+
+	/*
+	 * Filesystem subtype.  If non-empty the filesystem type field
+	 * in /proc/mounts will be "type.subtype"
+	 */
+	char *s_subtype;
+
+	/*
+	 * Saved mount options for lazy filesystems using
+	 * generic_show_options()
+	 */
+	char __rcu *s_options;
+	const struct dentry_operations *s_d_op; /* default d_op for dentries */
+
+	/*
+	 * Saved pool identifier for cleancache (-1 means none)
+	 */
+	int cleancache_poolid;
+
+	struct shrinker s_shrink;	/* per-sb shrinker handle */
+
+	/* Number of inodes with nlink == 0 but still referenced */
+	atomic_long_t s_remove_count;
+
+	/* Being remounted read-only */
+	int s_readonly_remount;
+
+	/* AIO completions deferred from interrupt context */
+	struct workqueue_struct *s_dio_done_wq;
+	struct hlist_head s_pins;
+
+	/*
+	 * Keep the lru lists last in the structure so they always sit on their
+	 * own individual cachelines.
+	 */
+	struct list_lru		s_dentry_lru ____cacheline_aligned_in_smp;
+	struct list_lru		s_inode_lru ____cacheline_aligned_in_smp;
+	struct rcu_head		rcu;
+
+	/*
+	 * Indicates how deep in a filesystem stack this SB is
+	 */
+	int s_stack_depth;
+};
+```
+
+### inode
+
+``` c++
+/* 
+ * inode_in_use：正在使用的inode，即有效的inode, i_count>0且i_nlink>0
+ * inode_unused：有效节点，但未使用，且不再pagecache中
+ * inode_unused_pagecache：同上，但是数据在pagecache中
+ * inode_hashtable：用于inode在hash表中，提供查找效率
+ * anon_hash_chain：用于超级块是空的的 inodes
+ * dirty：用于保存超级块中的所有的已经修改的 inodes
+ */
+struct inode {
+	umode_t			i_mode;		/* 文件的类型、访问权限 */
+	unsigned short		i_opflags;
+	kuid_t			i_uid;		/* 文件拥有者标识 */
+	kgid_t			i_gid;		/* 文件所在组标号 */
+	unsigned int		i_flags;/* 索引节点安装标识 */
+
+#ifdef CONFIG_FS_POSIX_ACL
+	struct posix_acl	*i_acl;
+	struct posix_acl	*i_default_acl;
+#endif
+
+	const struct inode_operations	*i_op;/* 索引节点操作 */
+	struct super_block	*i_sb;
+	/* 一个文件对应一个inode，对应一个address_space；和偏移量结合可以确定一个高速缓存页面 */
+	struct address_space	*i_mapping;
+
+#ifdef CONFIG_SECURITY
+	void			*i_security;
+#endif
+	unsigned long		i_ino;	/* 索引节点，唯一 */
+	/*
+	 * Filesystems may only read i_nlink directly.  They shall use the
+	 * following functions for modification:
+	 *
+	 *    (set|clear|inc|drop)_nlink
+	 *    inode_(inc|dec)_link_count
+	 * 与该节点简历链接的文件数
+	 */
+	union {
+		const unsigned int i_nlink;
+		unsigned int __i_nlink;
+	};
+	dev_t			i_rdev;		/* 实际的设备标识 */
+	loff_t			i_size;		/* 文件大小 */
+	struct timespec		i_atime;/* 最后一次访问时间 */
+	struct timespec		i_mtime;/* 最后一次修改时间 */
+	struct timespec		i_ctime;/* inode最后一次修改时间 */
+	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
+	unsigned short          i_bytes;/* 文件中最后一个块的字节数 */
+	unsigned int		i_blkbits;/* 块大小 */
+	blkcnt_t		i_blocks;		/* 文件占块数 */
+
+#ifdef __NEED_I_SIZE_ORDERED
+	seqcount_t		i_size_seqcount;
+#endif
+
+	/* Misc */
+	unsigned long		i_state;/* 索引节点的状态标识：I_NEW，I_LOCK，I_FREEING */
+	struct mutex		i_mutex;
+
+	unsigned long		dirtied_when;	/* jiffies of first dirtying */
+	unsigned long		dirtied_time_when;
+
+	struct hlist_node	i_hash;i_dentry
+	struct list_head	i_wb_list;	/* backing dev IO list */
+	struct list_head	i_lru;		/* inode LRU list */
+	struct list_head	i_sb_list;
+	union {
+	/* 目录项链表指针，一个inode可以对应多个dentry；这个链表就是所有与本inode对应的dentry */
+		struct hlist_head	i_dentry;
+		struct rcu_head		i_rcu;
+	};
+	u64			i_version;/* 版本号 */
+	atomic_t		i_count;/* 引用计数 */
+	atomic_t		i_dio_count;
+	atomic_t		i_writecount;
+#ifdef CONFIG_IMA
+	atomic_t		i_readcount; /* struct files open RO */
+#endif
+	const struct file_operations	*i_fop;	/* former ->i_op->default_file_ops */
+	struct file_lock_context	*i_flctx;
+	struct address_space	i_data;/* 被inode读写的页面 */
+	struct list_head	i_devices;/* 设备链表，共用一个驱动程序的设备形成的链表 */
+	/* 管道、块、字符设备指针 */
+	union {
+		struct pipe_inode_info	*i_pipe;
+		struct block_device	*i_bdev;
+		struct cdev		*i_cdev;
+	};
+
+	__u32			i_generation;
+
+#ifdef CONFIG_FSNOTIFY
+	__u32			i_fsnotify_mask; /* all events this inode cares about */
+	struct hlist_head	i_fsnotify_marks;
+#endif
+
+	void			*i_private; /* fs or device private pointer */
+}
+```
+
+### dentry
+
+``` c++
+/* 
+ * 目录项：描述文件的逻辑属性，只存在于内存中，为提高查找性能涉及；
+ * 无论是文件夹还是最终的文件，都属于目录项，所有目录项在一起构成一颗庞大的目录树
+ * VFS在查找的时候，根据一层层的目录项找到对应每个目录的inode，就可以找到最终的文件
+ */
+struct dentry {
+	/* 目录项缓存标志，可取DCACHE_UNUSED, DCACHE_REFERENCED等 */
+	unsigned int d_flags;		/* protected by d_lock */
+	seqcount_t d_seq;		/* per dentry seqlock */
+	/* 链式hash表，一个dentry创建后，就通过d_hash链接进入对应的hash值的链表中 */
+	struct hlist_bl_node d_hash;	
+	struct dentry *d_parent;	/* parent directory */
+	struct qstr d_name;
+	struct inode *d_inode;		/* 与该目录项关联的inode */
+	unsigned char d_iname[DNAME_INLINE_LEN];	/* 存放短的文件名 */
+
+	/* Ref lookup also touches following */
+	struct lockref d_lockref;	/* per-dentry lock and refcount */
+	const struct dentry_operations *d_op;
+	struct super_block *d_sb;	/* The root of the dentry tree */
+	unsigned long d_time;		/* used by d_revalidate */
+	void *d_fsdata;			/* fs-specific data */
+
+	struct list_head d_lru;		/* 最近未使用的目录项链表 */
+	struct list_head d_child;	/* 加入到父目录的d_subdirs */
+	struct list_head d_subdirs;	/* 本目录的所有孩子目录链表头 */
+	/*
+	 * d_alias and d_rcu can share memory
+	 * 
+	 */
+	union {
+		struct hlist_node d_alias;	/* inode alias list */
+	 	struct rcu_head d_rcu;
+	} d_u;
+};
+```
+
+### file
+
+``` c++
+struct file {
+	union {
+		struct llist_node	fu_llist;
+		struct rcu_head 	fu_rcuhead;
+	} f_u;
+	struct path		f_path;
+	struct inode		*f_inode;	/* cached value */
+	/* 文件操作，当进程打开文件的时候，这个文件的关联inode->i_fop文件操作会初始化本字段 */
+	const struct file_operations	*f_op;
+
+	/*
+	 * Protects f_ep_links, f_flags.
+	 * Must not be taken from IRQ context.
+	 */
+	spinlock_t		f_lock;
+	atomic_long_t		f_count;
+	unsigned int 		f_flags;
+	fmode_t			f_mode;		/* 文件访问模式 */
+	struct mutex		f_pos_lock;
+	loff_t			f_pos;		/* 目前文件的相对开头偏移量 */
+	struct fown_struct	f_owner;/* 记录一个进程ID */
+	const struct cred	*f_cred;
+	struct file_ra_state	f_ra;
+
+	u64			f_version;		/* 版本号，当f_pos改变时，递增 */
+#ifdef CONFIG_SECURITY
+	void			*f_security;
+#endif
+	/* needed for tty driver, and maybe others */
+	void			*private_data;/* 私有数据 */
+
+#ifdef CONFIG_EPOLL
+	/* Used by fs/eventpoll.c to link all the hooks to this file */
+	struct list_head	f_ep_links;
+	struct list_head	f_tfile_llink;
+#endif /* #ifdef CONFIG_EPOLL */
+	struct address_space	*f_mapping;
+} __attribute__((aligned(4)));	/* lest something weird decides that 2 is OK */
+```
+
+
+
+### nameidata
+
+``` c++
+struct nameidata {
+    struct path    path;//保存当前搜索到的路径；
+    struct qstr    last;//保存当前子路径名及其散列值；
+    struct path    root;//用来保存根目录的信息；
+    struct inode    *inode; /* path.dentry.d_inode *///指向当前找到的目录项的 inode 结构；
+    unsigned int    flags;//是一些和查找（lookup）相关的标志位；
+    unsigned    seq, m_seq;//seq 是相关目录项的顺序锁序号；是相关文件系统（其实是 mount）的顺序锁序号；
+    int        last_type;//表示当前节点类型；
+    unsigned    depth;//用来记录在解析符号链接过程中的递归深度；
+    char *saved_names[MAX_NESTED_LINKS + 1];//用来记录相应递归深度的符号链接的路径。
+};
+```
+
+###  
+
+``` c++
+
+```
+
+## 参考资料
+
+[open函数详解](http://edsionte.com/techblog/archives/4476)
+
+[linux 路径名查找上](https://www.sohu.com/a/109398424_467784)
+
+[linux 路径名查找下](https://www.sohu.com/a/109477788_467784)
+
+[linux open系统调用流程浅析](https://www.jianshu.com/p/f3f5a33f2c59)
