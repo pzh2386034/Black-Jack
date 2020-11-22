@@ -562,6 +562,24 @@ struct zone {
     ......
 }
 
+/* zone状态标识 */
+enum zone_flags {
+	ZONE_RECLAIM_LOCKED,		/* 防止并发回收 */
+	ZONE_OOM_LOCKED,		/* 该zone正在进行oom回收，防止多个cpu并发回收 */
+	ZONE_CONGESTED,			/* zone has many dirty pages backed by
+					 * a congested BDI
+					 */
+	ZONE_DIRTY,			/* reclaim scanning has recently found
+					 * many dirty file pages at the tail
+					 * of the LRU.
+					 */
+	ZONE_WRITEBACK,			/* reclaim scanning has recently found
+					 * many pages under writeback
+					 */
+	ZONE_FAIR_DEPLETED,		/* fair zone policy batch depleted */
+};
+
+
 /* 每CPU高速缓存描述符 */
 struct per_cpu_pageset {
     /* 核心结构，高速缓存页框结构 */
