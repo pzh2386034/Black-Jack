@@ -303,39 +303,35 @@ sudo apt install python-pip
 sudo rm /var/cache/apt/archives/lock3
 sudo rm /var/lib/dpkg/lock
 
-### 创建新用户
+## [i2c](http://blog.chinaunix.net/uid-25445243-id-3609731.html)
+
+![i2c](i2c.gif)
+
+一条i2c总线对应一个adapter，在内核中对应一个`struct i2c_adapter`，其中定义了i2c支持的操作
+
+I2c write byte实现原理：
+
+​    (1)设置GPIO的相关引脚为IIC输出；
+
+​    (2)设置IIC（打开ACK，打开IIC中断，设置CLK等）；
+
+​    (3)设备地址赋给IICDS ，并设置IICSTAT，启动IIC发送设备地址出去；从而找到相应的设备即IIC总线上的设备。
+
+​    (4)第一个Byte的设备地址发送后，从EEPROM得到ACK信号，此信号触发中断；
+
+​    (5)在中断处理函数中把第二个Byte（设备内地址）发送出去；发送之后，接收到ACK又触发中断；
+
+​    (6)中断处理函数把第三个Byte（真正的数据）发送到设备中。
+
+​    (7)发送之后同样接收到ACK并触发中断，中断处理函数判断，发现数据传送完毕。
+
+​    (8)IIC Stop信号，关IIC中断，置位各寄存器。
+
+对于eeprom，IICDS寄存器会先将数据放在ring buffer中，当收到stop信号后，才开始实际写入eeprom;期间会屏蔽cpu信号
 
 
 
-#### dpkgbug
-
-cd /var/lib/dpkg
-sudo mv info info.bak
-sudo mkdir info
-sudo apt-get upgrade
-sudo mv info/* info.bak
-sudo rm info -rf
-sudo mv info.bak info
-ls info.bak/ |grep -i grub-pc
-sudo mv info.bak/grub-pc.* /tmp
-
-
-经分析，redfish开发计划分两部分
-    1. 接口开发
-    2. 文档开发(redfish没有文档说明几乎无法交付使用)
-
-接口开发：
-    经对比华为服务器redfish接口及restful协议规范，总计有62个接口属于高优先级(华为实现+协议规范)待开发，具体分为以下几个模块：
-    1. /redfish/v1/Managers：华为共实现114个接口，长城共实现12个；其中17个接口高优先级待开发
-    2. /redfish/v1/Systems：华为共实现63个接口，长城实现16个接口；高优先级开发待开发15个接口
-    3. /redfish/v1/AccountService：华为共实现29个接口，长城共实现10个；高优先级待开发6个关于LDAP的接口
-    4. /redfish/v1/UpdateService：华为共实现5个接口，长城共实现3个，高优先待开发2个关于升级部件接口
-    5. /redfish/v1/TaskService：华为共实现4个接口，长城共实现0个，高优先待开发3个关于任务进度查询接口
-    6. /redfish/v1/EventService：华为共实现10个接口，长城共实现0个，高优先待开发10个关于事件上报，事件订阅接口
-    7. /redfish/v1/Chassis：华为总计29个接口，长城已开发8个；建议优先开发8个关于网络适配器的接口
-
-文档开发：
-    建议使用latex排版工具，可以在linux下高效开发高质量文档；源文件为.tex文本文件，经编译后生成PDF，见附录样例
+## debug
 
 
 ncsi网口不通问题解决思路：
