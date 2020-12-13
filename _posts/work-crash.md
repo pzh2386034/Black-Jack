@@ -329,7 +329,23 @@ I2c write byte实现原理：
 
 对于eeprom，IICDS寄存器会先将数据放在ring buffer中，当收到stop信号后，才开始实际写入eeprom;期间会屏蔽cpu信号
 
+* I2c core(i2c-core.c, struct i2c_adapter)
+  * 提供i2c设备注册，注销，通信方法，设备探测，检测设备地址等；链接i2c设备与i2c adapter
+* I2c 总线驱动(struct i2c_algorithm)
+  * 控制i2c adaptor以主控方式产生开始位、停止位、读写周期，以及以从设备方式被读写、产生ACK等
+* i2c 设备驱动(struct i2c_client, struct i2c_driver)
+  * 通过i2c adaptor与cpu交换数据
+  * i2c_client对应于真实的物理设备，每个I2C设备都需要一个i2c_client来描述
 
+#### 内核中i2c驱动
+
+文件功能
+
+* `i2c-core.c`:文件实现了I2C核心的功能以及/proc/bus/i2c*接口
+* `i2c-dev.c`:实现i2c adapter设备文件功能，主设备号都为89，次设备号为0-255；应用程序通过操作i2c-%d访问设备
+* chips文件夹：包含了一些特定的I2C设备驱动，如RTC实时钟芯片驱动和I2C接口的EEPROM驱动等
+* buses文件夹:i2c总线驱动，如s3c2410的i2c控制器驱动为 i2c-s3c2410.c
+* algos文件夹: 实现i2c总线adapter的algorithm
 
 ## debug
 
