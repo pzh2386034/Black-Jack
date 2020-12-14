@@ -291,7 +291,6 @@ dd if=/dev/zero of=./geek_fs bs=1M count=20 ##创建一个image file，if为输�
 mkfs -t ext4 ./geek_fs #将image file格式化为 ext4 filesystem
 sudo mount (-r) ./geek_fs /media/dave/geek #(以只读)挂载filesystem
 sudo chown dave:users /media/dave/geek #设置filesystem用户组
-### 挂载硬盘
 
 ### 设置权限
 
@@ -302,6 +301,10 @@ sudo chown dave:users /media/dave/geek #设置filesystem用户组
 sudo apt install python-pip
 sudo rm /var/cache/apt/archives/lock3
 sudo rm /var/lib/dpkg/lock
+
+## LINUX设备
+
+cat /proc/devices  ##内核可以识别的所有设备均在Documentation/devices.txt中记录；"UART串口"是指 8250/16450/16550 UART串行控制芯片
 
 ## [i2c](http://blog.chinaunix.net/uid-25445243-id-3609731.html)
 

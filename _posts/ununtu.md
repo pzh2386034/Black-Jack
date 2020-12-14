@@ -12,6 +12,11 @@ sudo add-apt-repository 'deb https://typora.io ./linux/'
 sudo apt-get update
 sudo apt-get install typora
 
+## vscode
+
+1. sudo apt-get install openssh-client openssh-sftp-server openssh-server ssh
+2. sudo apt-get install ssh-askpass
+
 # latex
 
 ## 正反向搜索配置
