@@ -306,6 +306,10 @@ sudo rm /var/lib/dpkg/lock
 
 cat /proc/devices  ##内核可以识别的所有设备均在Documentation/devices.txt中记录；"UART串口"是指 8250/16450/16550 UART串行控制芯片
 
+![kobject](kobject.gif)
+
+![kobject_total](kobject_total.gif)
+
 ## [i2c](http://blog.chinaunix.net/uid-25445243-id-3609731.html)
 
 ![i2c](i2c.gif)

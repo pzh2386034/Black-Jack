@@ -110,3 +110,23 @@ sudo apt-get install typora
     }
 }
 okular: setting->configure okular->edit->  costom test editor, code -g "%f":"%l"
+
+## macos
+
+```zsh
+brew install tmux fpp zsh autojump coreutils
+git clone git@github.com:zsh-users/antigen.git
+source antigen/antigen.zsh
+antigen bundle zsh-users/zsh-syntax-highlighting
+antigen bundle git
+antigen bundle zsh-users/zsh-completions
+antigen bundle zsh-users/zsh-autosuggestions
+antigen bundle autojump
+antigen bundle sorin-ionescu/prezto
+antigen theme romkatv/powerlevel10k
+antigen bundle denisidoro/navi
+antigen bundle b4b4r07/enhancd
+supercrabtree/k #list file info
+antigen bundle zsh-users/zaw
+```
+
