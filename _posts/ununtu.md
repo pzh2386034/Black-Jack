@@ -3,6 +3,10 @@ sudo apt install flameshot
 
 sudo apt install net-tools
 
+sudo apt install zsh tmux
+
+chsh -s /bin/zsh
+
 ## 光标停闪
 gsettings set org.gnome.desktop.interface cursor-blink false
 
@@ -11,6 +15,74 @@ sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys BA300B7755AFCFAE
 sudo add-apt-repository 'deb https://typora.io ./linux/'
 sudo apt-get update
 sudo apt-get install typora
+
+## tmux
+
+```bash
+https://www.kancloud.cn/kancloud/tmux/62463
+sudo apt-get install xclip(集成 Linux 系统上的剪贴板)
+PREFIX d	从一个会话中分离，让该会话在后台运行。
+PREFIX :	进入命令模式
+PREFIX c	在当前 tmux 会话创建一个新的窗口，是 new-window 命令的简写
+PREFIX 0...9	根据窗口的编号选择窗口
+PREFIX w	显示当前会话中所有窗口的可选择列表
+
+PREFIX o	在已打开的面板之间循环移动当前焦点
+PREFIX q	短暂地显示每个面板的编号
+PREFIX x	关闭当前面板，带有确认提示
+PREFIX SPACE	循环地使用 tmux 的几个默认面板布局
+
+:show-buffer;capture-pane;list-buffers;choose-buffer;save-buffer [filename]
+PREFIX Enter(PREFIX [) 	键会进入复制模式
+PREFIX p(show-buffer): 显示粘贴缓存区的内容
+PREFIX P : choose the paste-buffer to paste from
+capture-pane:	把整个面板的可视内容全部复制到一个粘贴缓存区里
+		#example  :  tmux capture-pane && tmux save-buffer buffer.txt
+
+```
+
+### session
+
+```bash
+<prefix> C-c` creates a new session
+:kill-session -t
+<prefix> $` rename session
+<prefix> C-f` lets you switch to another session by name
+```
+
+### window
+
+```bash
+PREFIX c        create window
+PREFIX &	杀死当前窗口，带有确认提示
+PREFIX c-h/c-l  window change
+PREFIX ,	显示一个提示符来重命名一个窗口
+PREFIX {/}   window swap
+:move-window -s 0:4 -t 4   move window to another session
+<prefix> Tab` brings you to the last active window
+```
+
+### pane
+
+```bash
+录屏
+PREFIX %/_	把当前窗口垂直地一分为二，分割后的两个面板各占 50% 大小
+PREFIX "/-	把当前窗口水平地一分为二，分割后的两个面板各占 50% 大小
+PREFIX h/j/k/l  pane change
+PREFIX !  	tmux 就会依据当前面板创建一个新的窗口
+:break-pane  pane expand to window
+:join-pane -s 1.0(bind window to pane)
+```
+
+
+
+## zsh
+
+
+
+
+
+
 
 ## vscode
 
