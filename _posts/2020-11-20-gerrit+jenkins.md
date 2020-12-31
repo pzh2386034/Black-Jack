@@ -42,6 +42,27 @@ systemctl status slapd
 
 /usr/share/slapd/
 
+### [password](https://www.ilanni.com/?p=14099)
+
+```bash
+ldapsearch -H ldapi:// -LLL -Q -Y EXTERNAL -b "cn=config" "(olcRootDN=*)" dn olcRootDN olcRootPW
+slappasswd -s 123456
+cat > /root/newpasswd.ldif <<"EOF"
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcRootPW
+olcRootPW: {SSHA}jPCXoLxOgasTDuWx9eNdZS0nrqd242oc(replace)
+EOF
+
+ldapmodify -H ldapi:// -Y EXTERNAL -f /root/newpasswd.ldif
+
+
+```
+
+ldapmodify -H ldapi:// -Y EXTERNAL -f /root/newpasswd.ldif
+
+
+
 ## gerrit
 
 * 初始化配置全enter，使用默认配置即可
