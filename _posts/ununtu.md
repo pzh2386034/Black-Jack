@@ -16,6 +16,21 @@ sudo add-apt-repository 'deb https://typora.io ./linux/'
 sudo apt-get update
 sudo apt-get install typora
 
+## docker 
+
+sudo apt install docker 
+sudo groupadd docker
+sudo gpasswd -a ${USER} docker
+sudo service docker restart
+newgrp - docker
+docker images
+
+## SOUGOU
+
+sudo apt install fcitx-bin
+sudo apt-get install fcitx-table
+sudo apt --fix-broken install 
+sudo dpkg -i sogoupinyin_2.3.2.07_amd64-831.deb
 ## tmux
 
 ```bash
@@ -201,4 +216,3 @@ antigen bundle b4b4r07/enhancd
 supercrabtree/k #list file info
 antigen bundle zsh-users/zaw
 ```
-
