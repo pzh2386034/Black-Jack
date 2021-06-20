@@ -16,7 +16,7 @@ busctl call xyz.openbmc_project.Ldap.Config /xyz/openbmc_project/user/ldap xyz.o
 busctl call xyz.openbmc_project.LDAP.PrivilegeMapper /xyz/openbmc_project/user/ldap xyz.openbmc_project.User.PrivilegeMapper Create ss student  priv-admin
 
 
-busctl call xyz.openbmc_project.LDAP.PrivilegeMapper /xyz/openbmc_project/user/ldap xyz.openbmc_project.User.PrivilegeMapper Create ss 
+busctl call xyz.openbmc_project.LDAP.PrivilegeMapper /xyz/openbmc_project/user/ldap xyz.openbmc_project.User.PrivilegeMapper Create ss
 
 
 curl -c cjar -b cjar -k -H "Content-Type: application/json" -X POST -d '{"data":[false,"ldap://192.168.100.5", "cn=panzehua,ou=users,dc=ldap,dc=com", "dc=ldap,dc=com","123456","0","1"]}''  https://192.168.100.153/xyz/openbmc_project/user/ldap/action/CreateConfig
@@ -80,7 +80,7 @@ git commit --amend --reset-author
 ## restful auto test: httprunner
 1. pip3 install httprunner
 2. httprunner -V
-in=$( base64 <<< "123456") 
+in=$( base64 <<< "123456")
 pwd=$( base64 -d <<< MQo= )
 升级
 pip3 install -U httprunner
@@ -90,7 +90,7 @@ pip3 install -U git+https://github.com/httprunner/httprunner.git@master
 
 ## 生成报告
 1. html
-hrun /path/to/testcase --html=report.html --self-contained-html  
+hrun /path/to/testcase --html=report.html --self-contained-html
 2. allure(可以在Jenkins中安装allure插件支持)
 pip3 install "httprunner[allure]"
 下载 https://github.com/allure-framework/allure2/releases/download/2.7.0/allure-2.7.0.zip
@@ -112,7 +112,7 @@ localhost, 127.0.0.0/8, ::1
 3. 2020/10/1--Now，负责601项目(百度，阿里，国电通)维护及新需求开发
 	a. 百度DHCPV6功能开发
 	b. 国电通紧急需求用户oem鉴权登入，web会话超时时间设置，密码安全校验规则等
-	c. 阿里解决bug 
+	c. 阿里解决bug
 	d.redfish使用手册开发
 
 
@@ -129,12 +129,12 @@ method.append("org.openbmc.control.Power", "pgood");
     "xyz.openbmc_project.State.Chassis", "CurrentPowerState");
 ```
 
-​        
+​
 
 ## kernel debug
 
 ~~~bash
-* cat /proc/sys/kernel/printk 
+* cat /proc/sys/kernel/printk
 
 ``` bash
 7 4 1 7
@@ -152,25 +152,26 @@ dts pattitions parse function register: module_init(ofpart_parser_init);
 
 mtd_device_parse_register()->parse_mtd_partitions()->mtd_part_of_parse()[register mtd0 image-bmc]->add_mtd_partitions[complete register different partitions]
 
-​		
+​
 
 mtd_part_of_parse: get partitions from dts file.
 
-
+## git
+git log --graph --decorate --oneline
 
 ## open kernel dev_dbg
 
 ```bash
 CONFIG_DEBUG_FS=y
 CONFIG_DYNAMIC_DEBUG=y
-mount -t debugfs none /sys/kernel/debug                       #路径也可以自己选择，这里用系统默认路径        
+mount -t debugfs none /sys/kernel/debug                       #路径也可以自己选择，这里用系统默认路径
 echo -n 'file xxx.c +p' > /data/debugfs/dynamic_debug/control  #增加xxx.c文件dynamic debug的输出
 echo -n 'file xxx.c -p' > /data/debugfs/dynamic_debug/control  #去掉xxx.c文件dynamic debug的输出
 CONFIG_CONSOLE_LOGLEVEL_DEFAULT=10
 
 
 cat /etc/mtab
-umount -v debugfs             通过设备名卸载 
+umount -v debugfs             通过设备名卸载
 umount -v /sys/kernel/debug         通过挂载点卸载
 
 echo 0 > /sys/class/gpio/gpio427/value

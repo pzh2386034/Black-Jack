@@ -89,14 +89,7 @@ PREFIX !  	tmux 就会依据当前面板创建一个新的窗口
 :join-pane -s 1.0(bind window to pane)
 ```
 
-
-
 ## zsh
-
-
-
-
-
 
 
 ## vscode
@@ -215,4 +208,7 @@ antigen bundle denisidoro/navi
 antigen bundle b4b4r07/enhancd
 supercrabtree/k #list file info
 antigen bundle zsh-users/zaw
+
+brew install reattach-to-user-namespace
+
 ```
