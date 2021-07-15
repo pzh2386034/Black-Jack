@@ -16,9 +16,9 @@ sudo add-apt-repository 'deb https://typora.io ./linux/'
 sudo apt-get update
 sudo apt-get install typora
 
-## docker 
+## docker
 
-sudo apt install docker 
+sudo apt install docker
 sudo groupadd docker
 sudo gpasswd -a ${USER} docker
 sudo service docker restart
@@ -29,7 +29,7 @@ docker images
 
 sudo apt install fcitx-bin
 sudo apt-get install fcitx-table
-sudo apt --fix-broken install 
+sudo apt --fix-broken install
 sudo dpkg -i sogoupinyin_2.3.2.07_amd64-831.deb
 ## tmux
 
@@ -212,3 +212,29 @@ antigen bundle zsh-users/zaw
 brew install reattach-to-user-namespace
 
 ```
+
+## virtualbox
+# https://medium.com/macoclock/share-folder-between-macos-and-ubuntu-4ce84fb5c1ad
+sudo dpkg --configure -a
+sudo apt-get install virtualbox-guest-utils
+sudo mount -t vboxsf java /home/jk/Documents/mac_shared
+```
+
+sudo apt install firefox xorg
+
+problem:/usr/lib/xorg/Xorg.wrap: Only console users are allowed to run the X server
+/etc/X11/Xwrapper.config
+```
+allowed_users=anybody
+needs_root_rights=yes
+```
+
+
+
+ubuntu with vnc server slove:
+https://www.linode.com/docs/guides/install-vnc-on-ubuntu-16-04/
+
+sudo apt-get install ubuntu-desktop gnome-panel gnome-settings-daemon metacity nautilus gnome-terminal
+vncserver -kill :1
+vncserver :1
+vncserver  -geometry 1600x1200 :1

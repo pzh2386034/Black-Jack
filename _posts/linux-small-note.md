@@ -157,7 +157,9 @@ mtd_device_parse_register()->parse_mtd_partitions()->mtd_part_of_parse()[registe
 mtd_part_of_parse: get partitions from dts file.
 
 ## git
+
 git log --graph --decorate --oneline
+docker run -d -P -v /Users/pan/wks:/opt -v /Users/pan/code:/home/docker --name openbmc bradchou/ubuntu:openbmc
 
 ## open kernel dev_dbg
 
