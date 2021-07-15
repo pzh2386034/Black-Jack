@@ -19,6 +19,7 @@ sudo apt-get install typora
 ## docker
 
 sudo apt install docker
+sudo apt install docker.io
 sudo groupadd docker
 sudo gpasswd -a ${USER} docker
 sudo service docker restart
@@ -88,10 +89,6 @@ PREFIX !  	tmux 就会依据当前面板创建一个新的窗口
 :break-pane  pane expand to window
 :join-pane -s 1.0(bind window to pane)
 ```
-
-## zsh
-
-
 ## vscode
 
 1. sudo apt-get install openssh-client openssh-sftp-server openssh-server ssh
@@ -218,23 +215,67 @@ brew install reattach-to-user-namespace
 sudo dpkg --configure -a
 sudo apt-get install virtualbox-guest-utils
 sudo mount -t vboxsf java /home/jk/Documents/mac_shared
-```
 
+```bash
 sudo apt install firefox xorg
 
 problem:/usr/lib/xorg/Xorg.wrap: Only console users are allowed to run the X server
 /etc/X11/Xwrapper.config
 ```
+
 allowed_users=anybody
 needs_root_rights=yes
-```
 
 
 
-ubuntu with vnc server slove:
+## ubuntu with vnc server slove:
 https://www.linode.com/docs/guides/install-vnc-on-ubuntu-16-04/
 
+### 编辑文件 File: ~/.vnc/xstartup
+
+``` bash
+#!/bin/sh
+
+# Uncomment the following two lines for normal desktop:
+# unset SESSION_MANAGER
+# exec /etc/X11/xinit/xinitrc
+
+[ -x /etc/vnc/xstartup ] && exec /etc/vnc/xstartup
+[ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources
+xsetroot -solid grey
+vncconfig -iconic &
+x-terminal-emulator -geometry 80x24+10+10 -ls -title "$VNCDESKTOP Desktop" &
+x-window-manager &
+
+gnome-panel &
+gnome-settings-daemon &
+metacity &
+nautilus &
+```
+
+``` bash
 sudo apt-get install ubuntu-desktop gnome-panel gnome-settings-daemon metacity nautilus gnome-terminal
 vncserver -kill :1
 vncserver :1
 vncserver  -geometry 1600x1200 :1
+```
+
+### mysql
+
+sudo cat /etc/mysql/debian.cnf
+
+USE mysql;
+UPDATE user SET plugin='mysql_native_password' WHERE User='root';
+update user set authentication_string='0penBmc',plugin='mysql_native_password' where user='root';
+flush privileges;
+sudo service mysql restart
+
+update user set authentication_string='' where user='root';
+alter user 'root'@'localhost' identified by '0penBmc';
+
+mysql://localhost:3306/mysql?user=root&password=0penBmc
+
+## add user
+
+sudo useradd --shell /bin/false --no-create-home -g operator test
+sudo passwd test
